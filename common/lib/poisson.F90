@@ -26,7 +26,7 @@ module common_poisson
   public :: solvePoisson, solveHelmholz
   public :: TBeckeIntegrator_solvePoisson, TBeckeIntegrator_solveHelmholz
   public :: TBeckeIntegrator_init, TBeckeIntegrator, TBeckeGridParams, TBeckeIntegrator_buildLU
-  public :: TBeckeIntegrator_getCoords, TBeckeIntegrator_setKernelParam
+  public :: TBeckeIntegrator_getCoords, TBeckeIntegrator_setKernelParam, TBeckeIntegrator_freeGrid
   public :: TBeckeIntegrator_precompFdMatrix
 
 
@@ -485,6 +485,20 @@ contains
     end do
 
   end subroutine TBeckeIntegrator_buildLU
+
+
+  !> Frees the (large) Becke integration grid, keeping the factorised fdmat. Use for integrators that
+  !! are afterwards consumed only via solveHelmholz/solvePoisson (which need fdmat + nRadial, not the
+  !! grid) -- e.g. the secondary per-Yukawa integrators of an erf range-separated functional, which
+  !! otherwise hold M identical copies of the grid.
+  subroutine TBeckeIntegrator_freeGrid(this)
+
+    !> Becke integrator instance
+    type(TBeckeIntegrator), intent(inout) :: this
+
+    if (allocated(this%beckeGrid)) deallocate(this%beckeGrid)
+
+  end subroutine TBeckeIntegrator_freeGrid
 
 
   !> Returns pointer to selected grid coordinates.

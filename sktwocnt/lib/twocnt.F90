@@ -16,10 +16,12 @@ module twocnt
   use common_splines, only : spline3ders
   use common_fifo, only : TFiFoReal2
   use common_schedule, only : getStartAndEndIndex
-  use common_interpolation, only : get2ndNaturalSplineDerivs, get_cubic_spline
+  use common_interpolation, only : get2ndNaturalSplineDerivs, TCubicSplineEval,&
+      & precompCubicSplineBrackets
   use common_poisson, only : solvePoisson, TBeckeGridParams, TBeckeIntegrator,&
       & TBeckeIntegrator_init, TBeckeIntegrator_setKernelParam, TBeckeIntegrator_precompFdMatrix,&
-      & TBeckeIntegrator_buildLU, TBeckeIntegrator_getCoords, TBeckeIntegrator_solveHelmholz
+      & TBeckeIntegrator_buildLU, TBeckeIntegrator_getCoords, TBeckeIntegrator_solveHelmholz,&
+      & TBeckeIntegrator_freeGrid
 
 #:if WITH_MPI
   use extlibs_mpifx, only : MPI_SUM, MPI_MAX, mpifx_allreduceip
@@ -27,19 +29,46 @@ module twocnt
 
   use gridorbital, only : TGridorb2
   use xcfunctionals, only : xcFunctional
+  use erfyukawa, only : getErfRangeSepYukawas, erfYukawaMaxM
 
   use, intrinsic :: iso_c_binding, only : c_size_t
 
 #:if LIBXC_VERSION_MAJOR == 6
   use xc_f03_lib_m, only : xc_f03_func_t, xc_f03_func_init, xc_f03_func_end, xc_f03_lda_vxc,&
-      & xc_f03_gga_vxc, XC_LDA_X, XC_LDA_X_YUKAWA, XC_LDA_C_PW, XC_GGA_X_PBE, XC_GGA_C_PBE,&
-      & XC_GGA_X_B88, XC_GGA_C_LYP, XC_GGA_X_SFAT_PBE, XC_HYB_GGA_XC_B3LYP,&
-      & XC_HYB_GGA_XC_CAMY_B3LYP, XC_UNPOLARIZED, xc_f03_func_set_ext_params
+      & xc_f03_gga_vxc, xc_f03_mgga_vxc, XC_LDA_X, XC_LDA_X_YUKAWA, XC_LDA_C_PW, XC_GGA_X_PBE,&
+      & XC_GGA_C_PBE, XC_GGA_X_B88, XC_GGA_C_LYP, XC_GGA_X_SFAT_PBE, XC_HYB_GGA_XC_B3LYP,&
+      & XC_HYB_GGA_XC_CAMY_B3LYP, XC_MGGA_X_R2SCAN, XC_MGGA_C_R2SCAN, XC_UNPOLARIZED,&
+      & xc_f03_func_set_ext_params,&
+      & XC_GGA_XC_B97_D, XC_HYB_GGA_XC_B97_2, XC_HYB_GGA_XC_B97_3, XC_MGGA_X_M06_L,&
+      & XC_MGGA_C_M06_L, XC_MGGA_XC_B97M_V, XC_HYB_MGGA_XC_R2SCANH, XC_HYB_MGGA_XC_R2SCAN0,&
+      & XC_HYB_MGGA_XC_PW6B95, XC_HYB_MGGA_X_MN15, XC_MGGA_C_MN15, XC_HYB_MGGA_X_M06_2X,&
+      & XC_MGGA_C_M06_2X, XC_HYB_GGA_XC_WB97X_V, XC_HYB_MGGA_XC_WB97M_V,&
+      & XC_GGA_X_PBE_R, XC_GGA_X_RPBE, XC_MGGA_X_TPSS, XC_MGGA_C_TPSS, XC_MGGA_X_TASK,&
+      & XC_MGGA_X_MN15_L, XC_MGGA_C_MN15_L, XC_HYB_MGGA_XC_TPSSH, XC_HYB_MGGA_XC_R2SCAN50,&
+      & XC_HYB_MGGA_X_M06, XC_MGGA_C_M06, XC_HYB_MGGA_X_CF22D, XC_MGGA_C_CF22D,&
+      & XC_HYB_GGA_XC_HSE06, XC_HYB_GGA_XC_LC_WPBE, XC_HYB_GGA_XC_CAM_B3LYP,&
+      & XC_HYB_GGA_XC_CAM_PBEH, XC_HYB_GGA_XC_WHPBE0, XC_HYB_GGA_XC_HSE12, XC_GGA_X_WPBEH, XC_LDA_X_ERF,&
+      & XC_GGA_XC_B97_3C, XC_HYB_GGA_XC_B97, XC_HYB_GGA_XC_B97_1, XC_HYB_GGA_XC_B97_K,&
+      & XC_HYB_GGA_XC_WB97, XC_HYB_GGA_XC_WB97X, XC_HYB_GGA_XC_WB97X_D, XC_HYB_GGA_XC_WB97X_D3,&
+      & XC_HYB_GGA_XC_O3LYP, XC_GGA_X_OPTX
 #:elif LIBXC_VERSION_MAJOR == 7
   use xc_f03_lib_m, only : xc_f03_func_t, xc_f03_func_init, xc_f03_func_end, xc_f03_lda_vxc,&
-      & xc_f03_gga_vxc, xc_f03_func_set_ext_params, XC_UNPOLARIZED
+      & xc_f03_gga_vxc, xc_f03_mgga_vxc, xc_f03_func_set_ext_params, XC_UNPOLARIZED
   use xc_f03_funcs_m, only : XC_LDA_X, XC_LDA_X_YUKAWA, XC_LDA_C_PW, XC_GGA_X_PBE, XC_GGA_C_PBE,&
-      & XC_GGA_X_B88, XC_GGA_C_LYP, XC_GGA_X_SFAT_PBE, XC_HYB_GGA_XC_B3LYP, XC_HYB_GGA_XC_CAMY_B3LYP
+      & XC_GGA_X_B88, XC_GGA_C_LYP, XC_GGA_X_SFAT_PBE, XC_HYB_GGA_XC_B3LYP, XC_HYB_GGA_XC_CAMY_B3LYP,&
+      & XC_MGGA_X_R2SCAN, XC_MGGA_C_R2SCAN,&
+      & XC_GGA_XC_B97_D, XC_HYB_GGA_XC_B97_2, XC_HYB_GGA_XC_B97_3, XC_MGGA_X_M06_L,&
+      & XC_MGGA_C_M06_L, XC_MGGA_XC_B97M_V, XC_HYB_MGGA_XC_R2SCANH, XC_HYB_MGGA_XC_R2SCAN0,&
+      & XC_HYB_MGGA_XC_PW6B95, XC_HYB_MGGA_X_MN15, XC_MGGA_C_MN15, XC_HYB_MGGA_X_M06_2X,&
+      & XC_MGGA_C_M06_2X, XC_HYB_GGA_XC_WB97X_V, XC_HYB_MGGA_XC_WB97M_V,&
+      & XC_GGA_X_PBE_R, XC_GGA_X_RPBE, XC_MGGA_X_TPSS, XC_MGGA_C_TPSS, XC_MGGA_X_TASK,&
+      & XC_MGGA_X_MN15_L, XC_MGGA_C_MN15_L, XC_HYB_MGGA_XC_TPSSH, XC_HYB_MGGA_XC_R2SCAN50,&
+      & XC_HYB_MGGA_X_M06, XC_MGGA_C_M06, XC_HYB_MGGA_X_CF22D, XC_MGGA_C_CF22D,&
+      & XC_HYB_GGA_XC_HSE06, XC_HYB_GGA_XC_LC_WPBE, XC_HYB_GGA_XC_CAM_B3LYP,&
+      & XC_HYB_GGA_XC_CAM_PBEH, XC_HYB_GGA_XC_WHPBE0, XC_HYB_GGA_XC_HSE12, XC_GGA_X_WPBEH, XC_LDA_X_ERF,&
+      & XC_GGA_XC_B97_3C, XC_HYB_GGA_XC_B97, XC_HYB_GGA_XC_B97_1, XC_HYB_GGA_XC_B97_K,&
+      & XC_HYB_GGA_XC_WB97, XC_HYB_GGA_XC_WB97X, XC_HYB_GGA_XC_WB97X_D, XC_HYB_GGA_XC_WB97X_D3,&
+      & XC_HYB_GGA_XC_O3LYP, XC_GGA_X_OPTX
 #:endif
 
   implicit none
@@ -78,6 +107,9 @@ module twocnt
 
     !> atomic density and 1st/2nd derivative on grid
     type(TGridorb2) :: rho, drho, ddrho
+
+    !> atomic kinetic energy density on grid (meta-GGA; superimposed tau = tau_A + tau_B)
+    type(TGridorb2) :: tau
 
   end type TAtomdata
 
@@ -124,9 +156,7 @@ module twocnt
     !> scaling factor of Becke transformation
     real(dp) :: rm
 
-    !> xc-functional type
-    !! (1: LDA-PW91, 2: GGA-PBE96, 3: GGA-BLYP, 4: LCY-PBE96, 5: LCY-BNL, 6: PBE0, 7: B3LYP,
-    !! 8: CAMY-B3LYP, 9: CAMY-PBEh)
+    !> xc-functional type (integer identifier; see the xcFunctional enum in the xcfunctionals module)
     integer :: iXC
 
     !! true, if a global hybrid functional is requested
@@ -137,6 +167,12 @@ module twocnt
 
     !! true, if a CAM functional is requested
     logical :: tCam
+
+    !! true, if an erf range-separated functional (HSE/LC/CAM/wB97, Yukawa-sum exchange) is requested
+    logical :: tRangeSepErf
+
+    !> number of Yukawa terms in the erf/erfc expansion (HSE/LC/CAM/wB97)
+    integer :: mYukawa
 
     !> atomic properties of slateratom code, in the homonuclear case only atom1 is read
     type(TAtomdata) :: atom1, atom2
@@ -242,6 +278,13 @@ contains
     !! Becke integrator instances
     type(TBeckeIntegrator) :: beckeInt
 
+    !! per-Yukawa Becke integrators for erf range-separated exchange (HSE/LC/CAM/wB97), one screened LU each
+    type(TBeckeIntegrator), allocatable :: beckeInts(:)
+
+    !! Yukawa exponents alpha_i = beta_i*omega and coefficients c_i, plus the number of terms
+    real(dp) :: yukAlpha(erfYukawaMaxM), yukCoeff(erfYukawaMaxM)
+    integer :: nYukawa, iYukawa
+
     !! grid characteristics
     type(TBeckeGridParams) :: beckeGridParams
 
@@ -300,6 +343,116 @@ contains
       call xc_f03_func_init(xcfunc_x, XC_GGA_X_PBE, XC_UNPOLARIZED)
       ! cpbe96
       call xc_f03_func_init(xcfunc_c, XC_GGA_C_PBE, XC_UNPOLARIZED)
+    case(xcFunctional%MGGA_r2SCAN)
+      call xc_f03_func_init(xcfunc_x, XC_MGGA_X_R2SCAN, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_MGGA_C_R2SCAN, XC_UNPOLARIZED)
+    case(xcFunctional%MGGA_M06L)
+      call xc_f03_func_init(xcfunc_x, XC_MGGA_X_M06_L, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_MGGA_C_M06_L, XC_UNPOLARIZED)
+    case(xcFunctional%HMGGA_MN15)
+      call xc_f03_func_init(xcfunc_x, XC_HYB_MGGA_X_MN15, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_MGGA_C_MN15, XC_UNPOLARIZED)
+    case(xcFunctional%HMGGA_M06_2X)
+      call xc_f03_func_init(xcfunc_x, XC_HYB_MGGA_X_M06_2X, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_MGGA_C_M06_2X, XC_UNPOLARIZED)
+    case(xcFunctional%GGA_B97D)
+      call xc_f03_func_init(xcfunc_xc, XC_GGA_XC_B97_D, XC_UNPOLARIZED)
+    case(xcFunctional%HYB_B97_2)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_B97_2, XC_UNPOLARIZED)
+    case(xcFunctional%HYB_B97_3)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_B97_3, XC_UNPOLARIZED)
+    case(xcFunctional%MGGA_B97M)
+      call xc_f03_func_init(xcfunc_xc, XC_MGGA_XC_B97M_V, XC_UNPOLARIZED)
+    case(xcFunctional%WB97X_V)
+      ! wB97X-V: combined erf range-separated semilocal hybrid GGA (libxc bakes in omega; the
+      ! camAlpha*K_full + camBeta*K_erfLR exact exchange is added in getskintegrals)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_WB97X_V, XC_UNPOLARIZED)
+    case(xcFunctional%WB97M_V)
+      ! wB97M-V / wB97M-D3: combined erf range-separated semilocal hybrid meta-GGA
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_MGGA_XC_WB97M_V, XC_UNPOLARIZED)
+    case(xcFunctional%GGA_revPBE)
+      call xc_f03_func_init(xcfunc_x, XC_GGA_X_PBE_R, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_GGA_C_PBE, XC_UNPOLARIZED)
+    case(xcFunctional%GGA_RPBE)
+      call xc_f03_func_init(xcfunc_x, XC_GGA_X_RPBE, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_GGA_C_PBE, XC_UNPOLARIZED)
+    case(xcFunctional%HYB_revPBE0)
+      ! revPBE exchange + correlation; the 25% HF is added in getskintegrals (global hybrid)
+      call xc_f03_func_init(xcfunc_x, XC_GGA_X_PBE_R, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_GGA_C_PBE, XC_UNPOLARIZED)
+    case(xcFunctional%MGGA_TPSS)
+      call xc_f03_func_init(xcfunc_x, XC_MGGA_X_TPSS, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_MGGA_C_TPSS, XC_UNPOLARIZED)
+    case(xcFunctional%MGGA_TASK)
+      ! TASK is an exchange-only meta-GGA (no correlation): use the combined xcfunc_xc slot
+      call xc_f03_func_init(xcfunc_xc, XC_MGGA_X_TASK, XC_UNPOLARIZED)
+    case(xcFunctional%MGGA_MN15L)
+      call xc_f03_func_init(xcfunc_x, XC_MGGA_X_MN15_L, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_MGGA_C_MN15_L, XC_UNPOLARIZED)
+    case(xcFunctional%HMGGA_TPSSh)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_MGGA_XC_TPSSH, XC_UNPOLARIZED)
+    case(xcFunctional%HMGGA_r2SCAN50)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_MGGA_XC_R2SCAN50, XC_UNPOLARIZED)
+    case(xcFunctional%HMGGA_M06)
+      call xc_f03_func_init(xcfunc_x, XC_HYB_MGGA_X_M06, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_MGGA_C_M06, XC_UNPOLARIZED)
+    case(xcFunctional%HMGGA_CF22D)
+      call xc_f03_func_init(xcfunc_x, XC_HYB_MGGA_X_CF22D, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_MGGA_C_CF22D, XC_UNPOLARIZED)
+    ! erf range-separated GGAs (combined libxc semilocal; the camAlpha*K_full + camBeta*K_erfLR exact
+    ! exchange is added in getskintegrals via the Yukawa-sum, like wB97X)
+    case(xcFunctional%HSE06)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_HSE06, XC_UNPOLARIZED)
+    case(xcFunctional%LC_WPBE)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_LC_WPBE, XC_UNPOLARIZED)
+    case(xcFunctional%CAM_B3LYP)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_CAM_B3LYP, XC_UNPOLARIZED)
+    case(xcFunctional%CAM_PBEH)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_CAM_PBEH, XC_UNPOLARIZED)
+    case(xcFunctional%WHPBE0)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_WHPBE0, XC_UNPOLARIZED)
+    case(xcFunctional%HSE12)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_HSE12, XC_UNPOLARIZED)
+    ! LC-PBE / LC-BNL: constructed short-range exchange (set to omega) + PBE correlation; 100% LR HF
+    case(xcFunctional%LC_PBE)
+      call xc_f03_func_init(xcfunc_x, XC_GGA_X_WPBEH, XC_UNPOLARIZED)
+      call xc_f03_func_set_ext_params(xcfunc_x, [inp%omega])
+      call xc_f03_func_init(xcfunc_c, XC_GGA_C_PBE, XC_UNPOLARIZED)
+    case(xcFunctional%LC_BNL)
+      call xc_f03_func_init(xcfunc_x, XC_LDA_X_ERF, XC_UNPOLARIZED)
+      call xc_f03_func_set_ext_params(xcfunc_x, [inp%omega])
+      call xc_f03_func_init(xcfunc_c, XC_GGA_C_PBE, XC_UNPOLARIZED)
+    case(xcFunctional%HMGGA_r2SCANh)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_MGGA_XC_R2SCANH, XC_UNPOLARIZED)
+    case(xcFunctional%HMGGA_r2SCAN0)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_MGGA_XC_R2SCAN0, XC_UNPOLARIZED)
+    case(xcFunctional%HMGGA_PW6B95)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_MGGA_XC_PW6B95, XC_UNPOLARIZED)
+    ! B97 (combined libxc semilocal GGA). Pure: B97-3c. Global hybrid: HYB_B97, B97-1,
+    ! B97-K. Range-sep: wB97, wB97X, wB97X-D, wB97X-D3 (Yukawa-sum exact exchange).
+    case(xcFunctional%GGA_B97_3c)
+      call xc_f03_func_init(xcfunc_xc, XC_GGA_XC_B97_3C, XC_UNPOLARIZED)
+    case(xcFunctional%HYB_B97)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_B97, XC_UNPOLARIZED)
+    case(xcFunctional%HYB_B97_1)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_B97_1, XC_UNPOLARIZED)
+    case(xcFunctional%HYB_B97_K)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_B97_K, XC_UNPOLARIZED)
+    case(xcFunctional%WB97)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_WB97, XC_UNPOLARIZED)
+    case(xcFunctional%WB97X)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_WB97X, XC_UNPOLARIZED)
+    case(xcFunctional%WB97X_D)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_WB97X_D, XC_UNPOLARIZED)
+    case(xcFunctional%WB97X_D3)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_WB97X_D3, XC_UNPOLARIZED)
+    ! HYB_O3LYP (global hybrid GGA; libxc returns the scaled semilocal, 11.61% HF via tGlobalHybrid path)
+    case(xcFunctional%HYB_O3LYP)
+      call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_O3LYP, XC_UNPOLARIZED)
+    ! GGA_OPBE (pure GGA: OPTX exchange + PBE correlation, like revPBE)
+    case(xcFunctional%GGA_OPBE)
+      call xc_f03_func_init(xcfunc_x, XC_GGA_X_OPTX, XC_UNPOLARIZED)
+      call xc_f03_func_init(xcfunc_c, XC_GGA_C_PBE, XC_UNPOLARIZED)
     end select
 
     if (inp%tLC .or. inp%tCam) then
@@ -326,7 +479,39 @@ contains
 
     end if
 
-    if (inp%tGlobalHybrid .or. inp%tCam) then
+    ! erf range-separated functionals (HSE/LC/CAM/wB97): one Becke integrator per Yukawa term, each with a
+    ! screened LU at alpha_i = beta_i*omega (plus the shared omega~0 full-range LU copied into H4). The
+    ! erf long-range exchange is then sum_i c_i * (full - screened_i) = sum_i c_i * K_LRYukawa(alpha_i).
+    nYukawa = 0
+    if (inp%tRangeSepErf) then
+      beckeGridParams%nRadial = inp%nRadial
+      beckeGridParams%nAngular = inp%nAngular
+      beckeGridParams%ll_max = inp%ll_max
+      beckeGridParams%rm = inp%rm
+      call getErfRangeSepYukawas(inp%mYukawa, inp%omega, nYukawa, yukAlpha, yukCoeff)
+      allocate(beckeInts(nYukawa))
+      do iYukawa = 1, nYukawa
+        call TBeckeIntegrator_init(beckeInts(iYukawa), beckeGridParams)
+        call TBeckeIntegrator_setKernelParam(beckeInts(iYukawa), 0.1e-16_dp)
+        call TBeckeIntegrator_precompFdMatrix(beckeInts(iYukawa))
+        call TBeckeIntegrator_buildLU(beckeInts(iYukawa))
+        beckeInts(iYukawa)%fdmat%H4 = beckeInts(iYukawa)%fdmat%H3
+        beckeInts(iYukawa)%fdmat%ipiv4 = beckeInts(iYukawa)%fdmat%ipiv2
+        call TBeckeIntegrator_setKernelParam(beckeInts(iYukawa), yukAlpha(iYukawa))
+        call TBeckeIntegrator_precompFdMatrix(beckeInts(iYukawa))
+        call TBeckeIntegrator_buildLU(beckeInts(iYukawa))
+      end do
+      ! beckeInts(2:) are consumed only via solveHelmholz (needs the factorised fdmat, not the grid);
+      ! beckeInts(1) supplies the shared grid in getLongRangeHFContribution. Free the duplicated grids
+      ! to avoid holding M identical copies (~0.7 GB at M=14 on a 2000x194 grid).
+      do iYukawa = 2, nYukawa
+        call TBeckeIntegrator_freeGrid(beckeInts(iYukawa))
+      end do
+    else
+      allocate(beckeInts(1))
+    end if
+
+    if (inp%tGlobalHybrid .or. inp%tCam .or. inp%tRangeSepErf) then
       call gauss_chebyshev_quadrature(inp%nRadial, radialHFQuadrature)
       ! generate spherical coordinate (r) for full-range Hartree-Fock contribution to H0
       call gengrid1_1(radialHFQuadrature, inp%rm, coordtrans_radial_becke2, rr3, dummyWeights)
@@ -335,7 +520,7 @@ contains
       allocate(rr3(1, 1))
     end if
 
-    if (inp%tGlobalHybrid) then
+    if (inp%tGlobalHybrid .or. inp%tRangeSepErf) then
       call initGaunt(inp%ll_max)
     end if
 
@@ -397,10 +582,11 @@ contains
             & grid2, dots, weights)
         nRad = size(quads(1)%xx)
         nAng = size(quads(2)%xx)
-        call getskintegrals(beckeInt, radialHFQuadrature, nRad, nAng, atom1, atom2, grid1, grid2,&
-            & rr3(:, 1), dots, weights, inp%tDensitySuperpos, inp%ll_max, inp%iXC, inp%camAlpha,&
-            & inp%camBeta, inp%tGlobalHybrid, inp%tLC, inp%tCam, imap, xcfunc_xc, xcfunc_x,&
-            & xcfunc_xsr, xcfunc_c, skhambuffer(:, ir), skoverbuffer(:, ir), denserr(ir))
+        call getskintegrals(beckeInt, beckeInts, yukCoeff, nYukawa, radialHFQuadrature, nRad, nAng,&
+            & atom1, atom2, grid1, grid2, rr3(:, 1), dots, weights, inp%tDensitySuperpos, inp%ll_max,&
+            & inp%iXC, inp%camAlpha, inp%camBeta, inp%tGlobalHybrid, inp%tLC, inp%tCam,&
+            & inp%tRangeSepErf, imap, xcfunc_xc, xcfunc_x, xcfunc_xsr, xcfunc_c,&
+            & skhambuffer(:, ir), skoverbuffer(:, ir), denserr(ir))
       end do lpDist
     #:if WITH_MPI
       call mpifx_allreduceip(env%mpi%globalComm, dist, MPI_MAX)
@@ -447,25 +633,37 @@ contains
     end if
     write(stdOut, "(A,ES10.3)") "Maximal integration error: ", denserrmax
 
-    ! finalize libxc objects
-    if (inp%tGlobalHybrid .or. inp%tCam) then
-      if (inp%iXC == xcFunctional%CAMY_PBEh) then
-        call xc_f03_func_end(xcfunc_xsr)
-        call xc_f03_func_end(xcfunc_x)
-        call xc_f03_func_end(xcfunc_c)
-      elseif (inp%iXC == xcFunctional%HYB_PBE0) then
-        call xc_f03_func_end(xcfunc_x)
-        call xc_f03_func_end(xcfunc_c)
-      else
-        call xc_f03_func_end(xcfunc_xc)
-      end if
+    ! finalize libxc objects (key off which objects were actually initialized above)
+    if (inp%iXC == xcFunctional%CAMY_PBEh) then
+      call xc_f03_func_end(xcfunc_xsr)
+      call xc_f03_func_end(xcfunc_x)
+      call xc_f03_func_end(xcfunc_c)
+    elseif (inp%iXC == xcFunctional%HYB_B3LYP .or. inp%iXC == xcFunctional%CAMY_B3LYP&
+        & .or. inp%iXC == xcFunctional%GGA_B97D .or. inp%iXC == xcFunctional%HYB_B97_2&
+        & .or. inp%iXC == xcFunctional%HYB_B97_3 .or. inp%iXC == xcFunctional%MGGA_B97M&
+        & .or. inp%iXC == xcFunctional%HMGGA_r2SCANh .or. inp%iXC == xcFunctional%HMGGA_r2SCAN0&
+        & .or. inp%iXC == xcFunctional%HMGGA_PW6B95 .or. inp%iXC == xcFunctional%WB97X_V&
+        & .or. inp%iXC == xcFunctional%WB97M_V .or. inp%iXC == xcFunctional%MGGA_TASK&
+        & .or. inp%iXC == xcFunctional%HMGGA_TPSSh .or. inp%iXC == xcFunctional%HMGGA_r2SCAN50&
+        & .or. inp%iXC == xcFunctional%HSE06 .or. inp%iXC == xcFunctional%LC_WPBE&
+        & .or. inp%iXC == xcFunctional%CAM_B3LYP .or. inp%iXC == xcFunctional%CAM_PBEH&
+        & .or. inp%iXC == xcFunctional%WHPBE0 .or. inp%iXC == xcFunctional%HSE12&
+        & .or. inp%iXC == xcFunctional%GGA_B97_3c&
+        & .or. inp%iXC == xcFunctional%HYB_B97 .or. inp%iXC == xcFunctional%HYB_B97_1&
+        & .or. inp%iXC == xcFunctional%HYB_B97_K&
+        & .or. inp%iXC == xcFunctional%WB97 .or. inp%iXC == xcFunctional%WB97X&
+        & .or. inp%iXC == xcFunctional%WB97X_D .or. inp%iXC == xcFunctional%WB97X_D3&
+        & .or. inp%iXC == xcFunctional%HYB_O3LYP) then
+      ! combined-xc functionals (only xcfunc_xc was initialized)
+      call xc_f03_func_end(xcfunc_xc)
     else
+      ! separate exchange/correlation functionals (xcfunc_x, xcfunc_c)
       call xc_f03_func_end(xcfunc_x)
       call xc_f03_func_end(xcfunc_c)
     end if
 
-    ! finalize anglib (global Hybrids only)
-    if (inp%tGlobalHybrid) then
+    ! finalize anglib (functionals that initialized Gaunt: global hybrids and erf range-separated)
+    if (inp%tGlobalHybrid .or. inp%tRangeSepErf) then
       call freeGaunt()
     end if
 
@@ -473,12 +671,22 @@ contains
 
 
   !> Calculates SK-integrals.
-  subroutine getskintegrals(beckeInt, radialHFQuadrature, nRad, nAng, atom1, atom2, grid1, grid2,&
-      & rr3, dots, weights, tDensitySuperpos, ll_max, iXC, camAlpha, camBeta, tGlobalHybrid, tLC,&
-      & tCam, imap, xcfunc_xc, xcfunc_x, xcfunc_xsr, xcfunc_c, skham, skover, denserr)
+  subroutine getskintegrals(beckeInt, beckeInts, yukCoeff, nYukawa, radialHFQuadrature, nRad, nAng,&
+      & atom1, atom2, grid1, grid2, rr3, dots, weights, tDensitySuperpos, ll_max, iXC, camAlpha,&
+      & camBeta, tGlobalHybrid, tLC, tCam, tRangeSepErf, imap, xcfunc_xc, xcfunc_x, xcfunc_xsr,&
+      & xcfunc_c, skham, skover, denserr)
 
-    !> Becke integrator instances
+    !> Becke integrator instance (single-Yukawa long-range exchange: LCY/CAMY)
     type(TBeckeIntegrator), intent(inout) :: beckeInt
+
+    !> per-Yukawa Becke integrators for erf range-separated exchange (HSE/LC/CAM/wB97)
+    type(TBeckeIntegrator), intent(inout), allocatable :: beckeInts(:)
+
+    !> Yukawa coefficients c_i of the erf/erfc expansion (sum_i c_i = 1)
+    real(dp), intent(in) :: yukCoeff(:)
+
+    !> number of Yukawa terms (0 unless tRangeSepErf)
+    integer, intent(in) :: nYukawa
 
     !! radial full-range Hartree-Fock quadrature information
     type(TQuadrature), intent(in) :: radialHFQuadrature
@@ -507,9 +715,7 @@ contains
     !> maximum angular momentum for Becke integration
     integer, intent(in) :: ll_max
 
-    !> xc-functional type
-    !! (1: LDA-PW91, 2: GGA-PBE96, 3: GGA-BLYP, 4: LCY-PBE96, 5: LCY-BNL, 6: PBE0, 7: B3LYP,
-    !! 8: CAMY-B3LYP, 9: CAMY-PBEh)
+    !> xc-functional type (integer identifier; see the xcFunctional enum in the xcfunctionals module)
     integer, intent(in) :: iXC
 
     !> CAM alpha parameter
@@ -526,6 +732,9 @@ contains
 
     !> true, if a CAM functional is requested
     logical, intent(in) :: tCam
+
+    !> true, if an erf range-separated functional (HSE/LC/CAM/wB97, Yukawa-sum exchange) is requested
+    logical, intent(in) :: tRangeSepErf
 
     !> two-center integration mapping instance
     type(TIntegMap), intent(in) :: imap
@@ -548,6 +757,9 @@ contains
     !! radial grid-orbital portion for all basis functions of atom 1
     real(dp), allocatable :: radval1(:,:)
 
+    !! radial grid-orbital 1st derivative for all basis functions of atom 1 (meta-GGA vtau term)
+    real(dp), allocatable :: radval1p(:,:)
+
     !! radial grid-orbital portion and 1st/2nd derivative for all basis functions of atom 2
     real(dp), allocatable :: radval2(:,:), radval2p(:,:), radval2pp(:,:)
 
@@ -563,11 +775,23 @@ contains
     !! real tesseral spherical harmonic for spherical coordinate (theta) of atom 1 and atom 2
     real(dp), allocatable :: spherval1(:), spherval2(:)
 
+    !! d/dtheta of the real tesseral spherical harmonic of atom 1 and atom 2 (meta-GGA vtau term)
+    real(dp), allocatable :: dspherval1(:), dspherval2(:)
+
+    !! meta-GGA: superimposed kinetic energy density and libxc d(e)/d(tau) (vtau operator weight)
+    real(dp), allocatable :: tauval(:), rtau(:), vtau(:), vxtau(:), vctau(:)
+
+    !! meta-GGA dummies: density laplacian (the tau-only meta-GGAs here do not use it) and its derivs
+    real(dp), allocatable :: lapl(:), vxlapl(:), vclapl(:)
+
     !! temporary storage for Hamiltonian, overlap, density and pre-factors
-    real(dp) :: integ1, integ2, dens, prefac
+    real(dp) :: integ1, integ2, integ_vtau, dens, prefac
 
     !! full-/long-range Hartree-Fock exchange contribution
     real(dp) :: frx, lrx
+
+    !! loop index over Yukawa terms (erf range-separated exchange)
+    integer :: iYuk
 
     !! number of integration points
     integer :: nGrid
@@ -585,6 +809,13 @@ contains
     real(dp), allocatable :: vxc(:), vx(:), vx_sr(:), vc(:)
     real(dp), allocatable :: rhor(:), sigma(:), vxcsigma(:), vxsigma(:), vxsigma_sr(:), vcsigma(:)
     real(dp), allocatable :: divvxc(:), divvx(:), divvc(:)
+
+    !! memoized radial orbital/core values on the fixed inner Becke grid (computed once per distance,
+    !! reused across integrals by getLongRangeHFContribution)
+    real(dp), allocatable :: radValBk1(:,:), coreValBk1(:,:), radValBk2(:,:), coreValBk2(:,:)
+    real(dp), allocatable :: radValHF1(:,:), coreValHF1(:,:), radValHF2(:,:), coreValHF2(:,:)
+    real(dp), pointer :: rr3becke(:)
+    integer :: iBk
 
     r1 => grid1(:, 1)
     theta1 => grid1(:, 2)
@@ -604,6 +835,15 @@ contains
     do ii = 1, size(radval1, dim=2)
       radval1(:, ii) = atom1%rad(ii)%getValue(r1)
     end do
+
+    ! meta-GGA: also need atom 1's radial derivative for the vtau operator grad(phi1).grad(phi2)
+    if (xcFunctional%isMGGA(iXC)) then
+      allocate(radval1p(nGrid, atom1%nbasis))
+      allocate(dspherval1(nGrid), dspherval2(nGrid))
+      do ii = 1, size(radval1, dim=2)
+        radval1p(:, ii) = atom1%drad(ii)%getValue(r1)
+      end do
+    end if
 
     ! get radial portions (and derivatives) of all basis functions of atom 2
     do ii = 1, size(radval2, dim=2)
@@ -635,7 +875,11 @@ contains
         ! care about correct 4pi normalization of density and compute sigma
         sigma = getLibxcSigma(densval1p, densval2p, dots)
       end if
-      if (tGlobalHybrid .or. tCam) then
+      ! vxc/vxcsigma are used by all combined-xc functionals: hybrids (tGlobalHybrid/tCam/tRangeSepErf)
+      ! AND the semilocal combined functionals B97-D and B97M
+      if (tGlobalHybrid .or. tCam .or. tRangeSepErf .or. iXC == xcFunctional%GGA_B97D&
+          & .or. iXC == xcFunctional%MGGA_B97M .or. iXC == xcFunctional%MGGA_TASK&
+          & .or. iXC == xcFunctional%GGA_B97_3c) then
         allocate(vxc(nGrid))
         vxc(:) = 0.0_dp
         allocate(vxcsigma(nGrid))
@@ -651,26 +895,67 @@ contains
       end if
 
       select case (iXC)
-      ! 1: LDA-PW91
+      ! LDA-PW91
       case(xcFunctional%LDA_PW91)
         call xc_f03_lda_vxc(xcfunc_x, nGridLibxc, rhor(1), vx(1))
         call xc_f03_lda_vxc(xcfunc_c, nGridLibxc, rhor(1), vc(1))
         potval = vx + vc
-      ! 2: GGA-PBE96, 3: GGA-BLYP, 4: LCY-PBE96
-      case(xcFunctional%GGA_PBE96, xcFunctional%GGA_BLYP, xcFunctional%LCY_PBE96)
+      ! gradient-corrected (GGA) potential: pure GGAs + LCY-PBE96 / LC-PBE
+      case(xcFunctional%GGA_PBE96, xcFunctional%GGA_BLYP, xcFunctional%LCY_PBE96,&
+          & xcFunctional%GGA_revPBE, xcFunctional%GGA_RPBE, xcFunctional%LC_PBE, xcFunctional%GGA_OPBE)
         call xc_f03_gga_vxc(xcfunc_x, nGridLibxc, rhor(1), sigma(1), vx(1), vxsigma(1))
         call xc_f03_gga_vxc(xcfunc_c, nGridLibxc, rhor(1), sigma(1), vc(1), vcsigma(1))
         call getDivergence(nRad, nAng, densval1p, densval2p, r1, r2, theta1, theta2, vxsigma, divvx)
         call getDivergence(nRad, nAng, densval1p, densval2p, r1, r2, theta1, theta2, vcsigma, divvc)
         potval = vx + vc + divvx + divvc
-      ! 5: LCY-BNL
-      case(xcFunctional%LCY_BNL)
+      ! separate-(x,c) meta-GGAs: r2SCAN, M06-L, and the HYB_X-based hybrids MN15/M06-2X (the
+      ! semilocal exchange from the libxc HYB_X functional; alpha*HF added via the tGlobalHybrid path)
+      case(xcFunctional%MGGA_r2SCAN, xcFunctional%MGGA_M06L, xcFunctional%HMGGA_MN15,&
+          & xcFunctional%HMGGA_M06_2X, xcFunctional%MGGA_TPSS, xcFunctional%MGGA_MN15L,&
+          & xcFunctional%HMGGA_M06, xcFunctional%HMGGA_CF22D)
+        ! kinetic energy density superposition tau = tau_A + tau_B (4pi-normalized like rho)
+        allocate(tauval(nGrid), rtau(nGrid))
+        tauval(:) = atom1%tau%getValue(r1) + atom2%tau%getValue(r2)
+        rtau = getLibxcRho(tauval)
+        ! the tau-only meta-GGAs do not use the density laplacian -> pass/ignore dummies
+        allocate(lapl(nGrid), vxlapl(nGrid), vclapl(nGrid))
+        lapl(:) = 0.0_dp; vxlapl(:) = 0.0_dp; vclapl(:) = 0.0_dp
+        allocate(vxtau(nGrid), vctau(nGrid), vtau(nGrid))
+        vxtau(:) = 0.0_dp; vctau(:) = 0.0_dp
+        call xc_f03_mgga_vxc(xcfunc_x, nGridLibxc, rhor(1), sigma(1), lapl(1), rtau(1), vx(1),&
+            & vxsigma(1), vxlapl(1), vxtau(1))
+        call xc_f03_mgga_vxc(xcfunc_c, nGridLibxc, rhor(1), sigma(1), lapl(1), rtau(1), vc(1),&
+            & vcsigma(1), vclapl(1), vctau(1))
+        call getDivergence(nRad, nAng, densval1p, densval2p, r1, r2, theta1, theta2, vxsigma, divvx)
+        call getDivergence(nRad, nAng, densval1p, densval2p, r1, r2, theta1, theta2, vcsigma, divvc)
+        potval = vx + vc + divvx + divvc
+        vtau(:) = vxtau + vctau
+      ! combined-xc meta-GGAs: B97M (semilocal), and the global hybrid meta-GGAs r2SCANh/r2SCAN0/
+      ! PW6B95 (libxc returns the scaled semilocal part; alpha*HF added via the tGlobalHybrid path)
+      case(xcFunctional%MGGA_B97M, xcFunctional%HMGGA_r2SCANh, xcFunctional%HMGGA_r2SCAN0,&
+          & xcFunctional%HMGGA_PW6B95, xcFunctional%WB97M_V, xcFunctional%MGGA_TASK,&
+          & xcFunctional%HMGGA_TPSSh, xcFunctional%HMGGA_r2SCAN50)
+        allocate(tauval(nGrid), rtau(nGrid))
+        tauval(:) = atom1%tau%getValue(r1) + atom2%tau%getValue(r2)
+        rtau = getLibxcRho(tauval)
+        allocate(lapl(nGrid), vxlapl(nGrid))
+        lapl(:) = 0.0_dp; vxlapl(:) = 0.0_dp
+        allocate(vxtau(nGrid), vtau(nGrid))
+        vxtau(:) = 0.0_dp
+        call xc_f03_mgga_vxc(xcfunc_xc, nGridLibxc, rhor(1), sigma(1), lapl(1), rtau(1), vxc(1),&
+            & vxcsigma(1), vxlapl(1), vxtau(1))
+        call getDivergence(nRad, nAng, densval1p, densval2p, r1, r2, theta1, theta2, vxcsigma,&
+            & divvxc)
+        potval = vxc + divvxc
+        vtau(:) = vxtau
+      ! LCY-BNL / LC-BNL (erf): LDA short-range exchange + GGA correlation
+      case(xcFunctional%LCY_BNL, xcFunctional%LC_BNL)
         call xc_f03_lda_vxc(xcfunc_x, nGridLibxc, rhor(1), vx(1))
         call xc_f03_gga_vxc(xcfunc_c, nGridLibxc, rhor(1), sigma(1), vc(1), vcsigma(1))
         call getDivergence(nRad, nAng, densval1p, densval2p, r1, r2, theta1, theta2, vcsigma, divvc)
         potval = vx + vc + divvc
-      ! 6: PBE0
-      case(6)
+      ! PBE0 / revPBE0: manual (1-alpha)*X + C global hybrid GGA assembly
+      case(xcFunctional%HYB_PBE0, xcFunctional%HYB_revPBE0)
         ! exchange
         call xc_f03_gga_vxc(xcfunc_x, nGridLibxc, rhor(1), sigma(1), vx(1), vxsigma(1))
         ! correlation
@@ -681,14 +966,21 @@ contains
         call getDivergence(nRad, nAng, densval1p, densval2p, r1, r2, theta1, theta2, vxcsigma,&
             & divvxc)
         potval = vxc + divvxc
-      ! 7: B3LYP, 8: CAMY-B3LYP
-      case(7:8)
+      ! B3LYP, CAMY-B3LYP, and other combined-xc GGAs: B97-D (semilocal), B97-2/B97-3
+      ! (global hybrid GGA; libxc returns the scaled semilocal part, alpha*HF via tGlobalHybrid)
+      case(xcFunctional%HYB_B3LYP, xcFunctional%CAMY_B3LYP,&
+          & xcFunctional%GGA_B97D, xcFunctional%HYB_B97_2, xcFunctional%HYB_B97_3,&
+          & xcFunctional%WB97X_V, xcFunctional%HSE06, xcFunctional%LC_WPBE, xcFunctional%CAM_B3LYP,&
+          & xcFunctional%CAM_PBEH, xcFunctional%WHPBE0, xcFunctional%HSE12,&
+          & xcFunctional%GGA_B97_3c, xcFunctional%HYB_B97, xcFunctional%HYB_B97_1, xcFunctional%HYB_B97_K,&
+          & xcFunctional%WB97, xcFunctional%WB97X, xcFunctional%WB97X_D, xcFunctional%WB97X_D3,&
+          & xcFunctional%HYB_O3LYP)
         call xc_f03_gga_vxc(xcfunc_xc, nGridLibxc, rhor(1), sigma(1), vxc(1), vxcsigma(1))
         call getDivergence(nRad, nAng, densval1p, densval2p, r1, r2, theta1, theta2, vxcsigma,&
             & divvxc)
         potval = vxc + divvxc
-      ! 9: CAMY-PBEh
-      case(9)
+      ! CAMY-PBEh
+      case(xcFunctional%CAMY_PBEh)
         ! short-range exchange
         call xc_f03_gga_vxc(xcfunc_xsr, nGridLibxc, rhor(1), sigma(1), vx_sr(1), vxsigma_sr(1))
         ! full-range exchange
@@ -705,6 +997,49 @@ contains
       ! add nuclear and coulomb potential to obtain the effective potential
       potval(:) = potval + atom1%pot%getValue(r1) + atom2%pot%getValue(r2)
     end if ifPotSup
+
+    ! Memoize the radial orbital/core interpolations onto the fixed inner Becke grid rr3 used by
+    ! getLongRangeHFContribution, so they are computed once per distance instead of once per integral.
+    ! (The Becke grid is beckeInt for LC/CAM, beckeInts(1) for the erf path; both constant here.)
+    if (tLC .or. tCam) then
+      call TBeckeIntegrator_getCoords(beckeInt, [3, 1, 1], rr3becke)
+    elseif (tRangeSepErf) then
+      call TBeckeIntegrator_getCoords(beckeInts(1), [3, 1, 1], rr3becke)
+    end if
+    if (tLC .or. tCam .or. tRangeSepErf) then
+      allocate(radValBk1(size(rr3becke), atom1%nBasis), coreValBk1(size(rr3becke), atom1%nCore))
+      do iBk = 1, atom1%nBasis
+        radValBk1(:, iBk) = atom1%rad(iBk)%getValue(rr3becke)
+      end do
+      do iBk = 1, atom1%nCore
+        coreValBk1(:, iBk) = atom1%corerad(iBk)%getValue(rr3becke)
+      end do
+      allocate(radValBk2(size(rr3becke), atom2%nBasis), coreValBk2(size(rr3becke), atom2%nCore))
+      do iBk = 1, atom2%nBasis
+        radValBk2(:, iBk) = atom2%rad(iBk)%getValue(rr3becke)
+      end do
+      do iBk = 1, atom2%nCore
+        coreValBk2(:, iBk) = atom2%corerad(iBk)%getValue(rr3becke)
+      end do
+    end if
+
+    ! Same memoization for getFullRangeHFContribution, on its (fixed) HF-quadrature grid rr3.
+    if (tGlobalHybrid .or. tCam .or. tRangeSepErf) then
+      allocate(radValHF1(size(rr3), atom1%nBasis), coreValHF1(size(rr3), atom1%nCore))
+      do iBk = 1, atom1%nBasis
+        radValHF1(:, iBk) = atom1%rad(iBk)%getValue(rr3)
+      end do
+      do iBk = 1, atom1%nCore
+        coreValHF1(:, iBk) = atom1%corerad(iBk)%getValue(rr3)
+      end do
+      allocate(radValHF2(size(rr3), atom2%nBasis), coreValHF2(size(rr3), atom2%nCore))
+      do iBk = 1, atom2%nBasis
+        radValHF2(:, iBk) = atom2%rad(iBk)%getValue(rr3)
+      end do
+      do iBk = 1, atom2%nCore
+        coreValHF2(:, iBk) = atom2%corerad(iBk)%getValue(rr3)
+      end do
+    end if
 
     denserr = 0.0_dp
     do ii = 1, imap%ninteg
@@ -725,30 +1060,68 @@ contains
       ! Hamiltonian
       integ1 = getHamiltonian(radval1(:, i1), radval2(:, i2), radval2p(:, i2), radval2pp(:, i2),&
           & r2, l2, spherval1, spherval2, potval, weights)
+      ! meta-GGA: add the vtau operator matrix element +1/2 \int vtau grad(phi1).grad(phi2).
+      ! allocated(vtau) guards the unsupported potential-superposition + meta-GGA combination (there
+      ! vtau is never built); density superposition -- the only meaningful mode for libxc functionals
+      ! -- always allocates it, so this is a no-op on every tested path.
+      if (xcFunctional%isMGGA(iXC) .and. allocated(vtau)) then
+        dspherval1(:) = tes1%getGradTheta_1d(theta1)
+        dspherval2(:) = tes2%getGradTheta_1d(theta2)
+        integ_vtau = getVtau(radval1(:, i1), radval1p(:, i1), radval2(:, i2), radval2p(:, i2), r1,&
+            & r2, theta1, theta2, dots, spherval1, spherval2, dspherval1, dspherval2, mm, vtau,&
+            & weights)
+        integ1 = integ1 + integ_vtau
+      end if
       ! overlap integral: \sum_{r,\Omega} R_1(r) Y_1(\Omega) R_2(r) Y_2(\Omega) weight
       integ2 = getOverlap(radval1(:, i1), radval2(:, i2), spherval1, spherval2, weights)
       ! total density: \int (|\phi_1|^2 + |\phi_2|^2)
       dens = getDensity(radval1(:, i1), radval2(:, i2), spherval1, spherval2, weights)
 
-      if (iXC == xcFunctional%HYB_PBE0 .or. iXC == xcFunctional%HYB_B3LYP) then
-        ! full-range Hartree-Fock exchange contribution
+      if (tGlobalHybrid) then
+        ! full-range Hartree-Fock exchange contribution (all global hybrids: PBE0, B3LYP, B97-2/3,
+        ! r2SCANh/r2SCAN0, PW6B95, MN15, M06-2X; camAlpha is the functional-specific HFX fraction)
         frx = 0.5_dp * camAlpha * getFullRangeHFContribution(radialHFQuadrature%xx, rr3, ll_max,&
-            & atom1, atom2, imap, ii, r1, theta1, r2, theta2, weights)
+            & atom1, atom2, imap, ii, r1, theta1, r2, theta2, weights, radValHF1=radValHF1,&
+            & coreValHF1=coreValHF1, radValHF2=radValHF2, coreValHF2=coreValHF2)
         ! add up full-range exchange to the Hamiltonian
         integ1 = integ1 - frx
       elseif (tLC) then
         ! long-range Hartree-Fock exchange contribution
         lrx = 0.5_dp * getLongRangeHFContribution(beckeInt, atom1, atom2, imap, ii, r1, theta1, r2,&
-            & theta2, weights)
+            & theta2, weights, radValBk1=radValBk1, coreValBk1=coreValBk1, radValBk2=radValBk2,&
+            & coreValBk2=coreValBk2)
         ! add up long-range exchange to the Hamiltonian
         integ1 = integ1 - lrx
       elseif (tCam) then
         ! full-range Hartree-Fock exchange contribution
         frx = 0.5_dp * camAlpha * getFullRangeHFContribution(radialHFQuadrature%xx, rr3, ll_max,&
-            & atom1, atom2, imap, ii, r1, theta1, r2, theta2, weights)
+            & atom1, atom2, imap, ii, r1, theta1, r2, theta2, weights, radValHF1=radValHF1,&
+            & coreValHF1=coreValHF1, radValHF2=radValHF2, coreValHF2=coreValHF2)
         ! long-range Hartree-Fock exchange contribution
         lrx = 0.5_dp * camBeta * getLongRangeHFContribution(beckeInt, atom1, atom2, imap, ii, r1,&
-            & theta1, r2, theta2, weights)
+            & theta1, r2, theta2, weights, radValBk1=radValBk1, coreValBk1=coreValBk1,&
+            & radValBk2=radValBk2, coreValBk2=coreValBk2)
+        ! add up full-/long-range exchange to the Hamiltonian
+        integ1 = integ1 - frx - lrx
+      elseif (tRangeSepErf) then
+        ! erf range-separated exchange (HSE/LC/CAM/wB97): camAlpha*K_full + camBeta*K_erfLR, with the erf
+        ! long-range exchange K_erfLR = sum_i c_i * K_LRYukawa(beta_i*omega) (each term a long-range
+        ! Yukawa exchange from its own pre-built Becke integrator; sum_i c_i = 1).
+        ! Skip the full-range Coulomb-exchange solve for the pure long-range functionals (camAlpha = 0:
+        ! LC-PBE/LC-wPBE/LC-BNL/wB97) -- it would only be scaled by zero.
+        if (camAlpha /= 0.0_dp) then
+          frx = 0.5_dp * camAlpha * getFullRangeHFContribution(radialHFQuadrature%xx, rr3, ll_max,&
+              & atom1, atom2, imap, ii, r1, theta1, r2, theta2, weights, radValHF1=radValHF1,&
+              & coreValHF1=coreValHF1, radValHF2=radValHF2, coreValHF2=coreValHF2)
+        else
+          frx = 0.0_dp
+        end if
+        ! erf long-range exchange in ONE pass: V_Coulomb - sum_i c_i*V_Yukawa(alpha_i). The shared
+        ! Poisson + interpolation work runs once inside; only the M screened solves loop over terms
+        ! (exact, since sum_i c_i = 1). beckeInts(1) supplies the shared grid; the solves use the set.
+        lrx = 0.5_dp * camBeta * getLongRangeHFContribution(beckeInts(1), atom1, atom2, imap, ii, r1,&
+            & theta1, r2, theta2, weights, beckeInts, yukCoeff, radValBk1=radValBk1,&
+            & coreValBk1=coreValBk1, radValBk2=radValBk2, coreValBk2=coreValBk2)
         ! add up full-/long-range exchange to the Hamiltonian
         integ1 = integ1 - frx - lrx
       end if
@@ -1067,9 +1440,66 @@ contains
   end function getHamiltonian
 
 
+  !> Meta-GGA vtau operator matrix element: +1/2 \int vtau grad(phi_1).grad(phi_2) d^3r (the
+  !! azimuthal phi-integral is handled by the prefactor pi[m/=0]/2pi[m=0] applied by the caller).
+  !! phi = R(r) Y(theta) on each center; both centers on the z-axis (phi-hat common), so with
+  !! cosd = r1hat.r2hat = th1hat.th2hat = dots and sind = r1hat.th2hat = -th1hat.r2hat = sin(th1-th2):
+  pure function getVtau(rad1, rad1p, rad2, rad2p, r1, r2, theta1, theta2, dots, spher1, spher2,&
+      & dspher1, dspher2, mm, vtau, weights) result(res)
+
+    !> radial grid-orbital portion and 1st derivative of atom 1 and atom 2
+    real(dp), intent(in) :: rad1(:), rad1p(:), rad2(:), rad2p(:)
+
+    !> radial spherical coordinates of atom 1 and atom 2 on grid
+    real(dp), intent(in) :: r1(:), r2(:), theta1(:), theta2(:)
+
+    !> dot product of unit distance vectors (= cos(theta1 - theta2))
+    real(dp), intent(in) :: dots(:)
+
+    !> tesseral harmonic and its theta-derivative for atom 1 and atom 2
+    real(dp), intent(in) :: spher1(:), spher2(:), dspher1(:), dspher2(:)
+
+    !> magnetic quantum number (interaction type)
+    integer, intent(in) :: mm
+
+    !> libxc d(e)/d(tau) on grid (vtau operator weight)
+    real(dp), intent(in) :: vtau(:)
+
+    !> integration weights
+    real(dp), intent(in) :: weights(:)
+
+    !! resulting vtau matrix-element contribution
+    real(dp) :: res
+
+    !! grad(phi_1).grad(phi_2) angular structure on grid
+    real(dp), allocatable :: gdot(:), sind(:)
+
+    allocate(gdot(size(r1)), sind(size(r1)))
+    sind = sin(theta1 - theta2)
+
+    gdot = rad1p * rad2p * spher1 * spher2 * dots&                            ! radial-radial
+        & + rad1p * (rad2 / r2) * spher1 * dspher2 * sind&                    ! r1hat.th2hat
+        & - (rad1 / r1) * rad2p * dspher1 * spher2 * sind&                    ! th1hat.r2hat
+        & + (rad1 / r1) * (rad2 / r2) * dspher1 * dspher2 * dots              ! th1hat.th2hat
+
+    ! azimuthal (phi-hat) term ~ m^2 / (sin(theta1) sin(theta2)); only present for m /= 0. It must
+    ! be skipped (not just multiplied by m^2 = 0) for the sigma channel, otherwise the explicit
+    ! 1/sin gives 0*Inf = NaN at grid points that fall on the internuclear axis (sin(theta) -> 0),
+    ! which a sufficiently fine angular grid does hit.
+    if (mm /= 0) then
+      gdot = gdot + (rad1 / r1) * (rad2 / r2) / (sin(theta1) * sin(theta2))&
+          & * real(mm * mm, dp) * spher1 * spher2
+    end if
+
+    res = 0.5_dp * sum(weights * vtau * gdot)
+
+  end function getVtau
+
+
   !> Calculates full-range HF contribution to H0, i.e. two-center integral over Coulomb kernel.
   function getFullRangeHFContribution(radialQuadratureXx, rr3, ll_max, atom1, atom2, imap, iInt,&
-      & rr1, theta1, rr2, theta2, weights) result(frContribution)
+      & rr1, theta1, rr2, theta2, weights, radValHF1, coreValHF1, radValHF2, coreValHF2)&
+      & result(frContribution)
 
     !> radial quadrature abscissae
     real(dp), intent(in) :: radialQuadratureXx(:)
@@ -1095,6 +1525,11 @@ contains
     !> integration weights
     real(dp), intent(in) :: weights(:)
 
+    !> precomputed radial orbital/core values on the (fixed) HF-quadrature grid rr3, indexed
+    !! (nRadial, orbital)/(nRadial, core). Optional memoization: avoids recomputing the rad/corerad
+    !! interpolation onto rr3 (constant across integrals and distances). Byte-identical.
+    real(dp), intent(in), optional :: radValHF1(:,:), coreValHF1(:,:), radValHF2(:,:), coreValHF2(:,:)
+
     !> FR contribution to the Hamiltonian H0
     real(dp) :: frContribution
 
@@ -1107,22 +1542,31 @@ contains
     !! T-symbol, see Vitalij's thesis
     real(dp) :: tsymbol
 
-    !! back-transformed, radial spherical coordinates of atom 1 and atom 2
-    real(dp), allocatable :: tmp11(:), tmp22(:)
+    !! back-transformed, radial spherical coordinates of atom 1 and atom 2.
+    !! NOTE: the scratch buffers below carry the 'save' attribute and are allocated once (guarded),
+    !! then reused across calls. The grid dimensions (nGrid, nRadial, ll_max) are constant within a
+    !! run and twocnt is single-threaded (no OpenMP), so persisting them eliminates the per-integral
+    !! malloc/free churn and is byte-identical (every element is overwritten before use each call).
+    real(dp), allocatable, save :: tmp11(:), tmp22(:)
 
     !! radial (core) parts of the inner integrand
-    real(dp), allocatable :: rrin(:), rrin2(:)
+    real(dp), allocatable, save :: rrin(:), rrin2(:)
 
     !! solution (and temporary storage) of inner integrands
-    real(dp), allocatable :: V(:), V_sum(:)
+    real(dp), allocatable, save :: V(:), V_sum(:)
 
     !! scaled weight/abscissa index i / (n + 1)
-    real(dp), allocatable :: zi(:)
+    real(dp), allocatable, save :: zi(:)
 
     !! l-resolved integral solution on fdiff nodes (+ 2nd derivatives) and lm-resolved density
-    real(dp), allocatable :: V_l(:,:,:), rho_lm(:)
+    real(dp), allocatable, save :: V_l(:,:,:), rho_lm(:)
 
-    !! 2nd derivatives of natural splines
+    !! precomputed cubic-spline brackets/weights for the fixed evaluation points tmp11 (bkSpl1) and
+    !! tmp22 (bkSpl2) against the abscissas zi; computed once per call and reused across all
+    !! (ll, iCore) inner-loop iterations (zi/tmp11/tmp22 are constant within a call). Byte-identical.
+    type(TCubicSplineEval), save :: bkSpl1, bkSpl2
+
+    !! 2nd derivatives of natural splines (callee-allocated, left as a fresh local)
     real(dp), allocatable :: secondDerivs(:)
 
     !! angular and magnetic momenta
@@ -1139,33 +1583,45 @@ contains
     nGrid = size(rr2)
     nRadial = size(rr3)
 
-    allocate(V(nGrid))
-    allocate(rrin(nRadial))
-    allocate(rrin2(nRadial))
-    allocate(rho_lm(nRadial))
-    allocate(zi(nRadial))
-    allocate(V_l(nRadial, ll_max, 2))
-
-    allocate(tmp22(nGrid))
-    allocate(tmp11(nGrid))
+    ! allocate scratch once (saved buffers reused across calls); see note in the declarations
+    if (.not. allocated(V)) allocate(V(nGrid))
+    if (.not. allocated(rrin)) allocate(rrin(nRadial))
+    if (.not. allocated(rrin2)) allocate(rrin2(nRadial))
+    if (.not. allocated(rho_lm)) allocate(rho_lm(nRadial))
+    if (.not. allocated(zi)) allocate(zi(nRadial))
+    if (.not. allocated(V_l)) allocate(V_l(nRadial, ll_max, 2))
+    if (.not. allocated(tmp22)) allocate(tmp22(nGrid))
+    if (.not. allocated(tmp11)) allocate(tmp11(nGrid))
     tmp22(:) = acos((rr2 - 1.0_dp) / (rr2 + 1.0_dp)) / pi
     tmp11(:) = acos((rr1 - 1.0_dp) / (rr1 + 1.0_dp)) / pi
 
     ! nu-orbital
     ll_nu = atom1%angmoms(imap%type(1, iInt))
     mm_nu = imap%type(3, iInt) - 1
-    rrin2(:) = atom1%rad(imap%type(1, iInt))%getValue(rr3)
+    if (present(radValHF1)) then
+      rrin2(:) = radValHF1(:, imap%type(1, iInt))
+    else
+      rrin2(:) = atom1%rad(imap%type(1, iInt))%getValue(rr3)
+    end if
 
     zi(:) = acos(radialQuadratureXx) / pi
 
-    allocate(V_sum(nGrid))
+    ! precompute spline brackets/weights once for tmp11 and tmp22 (reused across all ll and iCore)
+    call precompCubicSplineBrackets(zi, tmp11, bkSpl1)
+    call precompCubicSplineBrackets(zi, tmp22, bkSpl2)
+
+    if (.not. allocated(V_sum)) allocate(V_sum(nGrid))
     V_sum(:) = 0.0_dp
 
     ! start the sigma loop for all core electrons of atom1
     do iCore = 1, atom1%nCore
 
       ! evaluate the radial part of the inner integrand
-      rrin(:) = rrin2 * atom1%corerad(iCore)%getValue(rr3)
+      if (present(coreValHF1)) then
+        rrin(:) = rrin2 * coreValHF1(:, iCore)
+      else
+        rrin(:) = rrin2 * atom1%corerad(iCore)%getValue(rr3)
+      end if
       ll_a = atom1%coreAngmoms(iCore)
 
       ! solve the inner integral
@@ -1180,7 +1636,10 @@ contains
           V_l(:, ll+1, 1) = rho_lm
           V_l(:, ll+1, 2) = secondDerivs
           do iGridPt = 1, nGrid
-            call get_cubic_spline(zi, V_l(:, ll+1, 1), V_l(:, ll+1, 2), tmp11(iGridPt), yy2)
+            yy2 = bkSpl1%aa(iGridPt) * V_l(bkSpl1%left(iGridPt), ll+1, 1)&
+                & + bkSpl1%bb(iGridPt) * V_l(bkSpl1%right(iGridPt), ll+1, 1)&
+                & + bkSpl1%wl(iGridPt) * V_l(bkSpl1%left(iGridPt), ll+1, 2)&
+                & + bkSpl1%wr(iGridPt) * V_l(bkSpl1%right(iGridPt), ll+1, 2)
             V(iGridPt) = V(iGridPt) + yy2 * tsymbol
           end do
         end if
@@ -1210,7 +1669,11 @@ contains
     ! nu-orbital -> mu-orbital
     ll_nu = atom2%angmoms(imap%type(2, iInt))
     mm_nu = imap%type(3, iInt) - 1
-    rrin2(:) = atom2%rad(imap%type(2, iInt))%getValue(rr3)
+    if (present(radValHF2)) then
+      rrin2(:) = radValHF2(:, imap%type(2, iInt))
+    else
+      rrin2(:) = atom2%rad(imap%type(2, iInt))%getValue(rr3)
+    end if
 
     V_sum(:) = 0.0_dp
 
@@ -1218,7 +1681,11 @@ contains
     do iCore = 1, atom2%nCore
 
       ! evaluate the radial part of the inner integrand
-      rrin(:) = rrin2 * atom2%corerad(iCore)%getValue(rr3)
+      if (present(coreValHF2)) then
+        rrin(:) = rrin2 * coreValHF2(:, iCore)
+      else
+        rrin(:) = rrin2 * atom2%corerad(iCore)%getValue(rr3)
+      end if
       ll_a = atom2%coreAngmoms(iCore)
       zi(:) = acos(radialQuadratureXx) / pi
 
@@ -1234,7 +1701,10 @@ contains
           V_l(:, ll+1, 1) = rho_lm
           V_l(:, ll+1, 2) = secondDerivs
           do iGridPt = 1, nGrid
-            call get_cubic_spline(zi, V_l(:, ll+1, 1), V_l(:, ll+1, 2), tmp22(iGridPt), yy2)
+            yy2 = bkSpl2%aa(iGridPt) * V_l(bkSpl2%left(iGridPt), ll+1, 1)&
+                & + bkSpl2%bb(iGridPt) * V_l(bkSpl2%right(iGridPt), ll+1, 1)&
+                & + bkSpl2%wl(iGridPt) * V_l(bkSpl2%left(iGridPt), ll+1, 2)&
+                & + bkSpl2%wr(iGridPt) * V_l(bkSpl2%right(iGridPt), ll+1, 2)
             V(iGridPt) = V(iGridPt) + yy2 * tsymbol
           end do
         end if
@@ -1266,10 +1736,27 @@ contains
 
   !> Calculates long-range HF contribution to H0, i.e. two-center integral over descreened Yukawa.
   function getLongRangeHFContribution(beckeInt, atom1, atom2, imap, iInt, rr1, theta1, rr2, theta2,&
-      & weights) result(lcContribution)
+      & weights, beckeIntsErf, yukCoeffErf, radValBk1, coreValBk1, radValBk2, coreValBk2)&
+      & result(lcContribution)
 
-    !> Becke integrator instance
+    !> Becke integrator instance (single screening). For the erf path, pass any term's integrator
+    !! here -- only its grid is used; the screened solves use beckeIntsErf below.
     type(TBeckeIntegrator), intent(inout) :: beckeInt
+
+    !> erf range separation (optional): the full set of per-Yukawa Becke integrators and their
+    !! coefficients c_i. When present, the long-range exchange is built as the combined erf kernel in
+    !! ONE pass -- V_erfLR = V_Coulomb - sum_i c_i*V_Yukawa(alpha_i) -- so the shared (screening-
+    !! independent) Poisson + interpolation work runs once instead of once per term. Exact, since
+    !! sum_i c_i = 1; only the cheap screened solves loop over the terms.
+    type(TBeckeIntegrator), intent(inout), optional :: beckeIntsErf(:)
+
+    !> per-Yukawa coefficients c_i (same length as beckeIntsErf)
+    real(dp), intent(in), optional :: yukCoeffErf(:)
+
+    !> precomputed radial orbital/core values on the fixed inner Becke grid rr3, indexed
+    !! (nRadial, orbital) / (nRadial, core). Optional memoization: when present, avoids recomputing the
+    !! rad/corerad interpolation onto rr3 (constant across integrals and distances). Byte-identical.
+    real(dp), intent(in), optional :: radValBk1(:,:), coreValBk1(:,:), radValBk2(:,:), coreValBk2(:,:)
 
     !> atomic property instances of dimer atoms
     type(TAtomdata), intent(in) :: atom1, atom2
@@ -1298,14 +1785,27 @@ contains
     !!
     real(dp) :: yy2, tsymbol
 
-    !!
-    real(dp), allocatable :: V(:), tmp11(:), tmp22(:), V_sum(:), AA2(:), rrin(:), rrin2(:)
+    !! scratch buffers reused across calls (saved); grid dims (nGrid, nRadial, ll_max) are constant
+    !! within a run and twocnt is single-threaded, so this eliminates per-integral malloc/free churn
+    !! and is byte-identical (each is overwritten before use). 'res' is callee-allocated
+    !! (get2ndNaturalSplineDerivs) and intentionally kept as a fresh local.
+    real(dp), allocatable, save :: V(:), tmp11(:), tmp22(:), V_sum(:), AA2(:), rrin(:), rrin2(:)
 
     !!
-    real(dp), allocatable :: CCC(:)
+    real(dp), allocatable, save :: CCC(:)
 
     !!
-    real(dp), allocatable :: zi(:), V_l(:,:,:), rho_lm(:), res(:), rho_lm2(:), rho_lm3(:)
+    real(dp), allocatable, save :: zi(:), V_l(:,:,:), rho_lm(:), rho_lm2(:), rho_lm3(:)
+    real(dp), allocatable :: res(:)
+
+    !! erf combine-then-contract: accumulator for sum_i c_i*Helmholtz_i, and the Yukawa-term index
+    real(dp), allocatable, save :: rho_lm_acc(:)
+    integer :: iYukLoc
+
+    !! precomputed cubic-spline brackets/weights for the fixed evaluation points tmp11 (bkSpl1) and
+    !! tmp22 (bkSpl2) against the abscissas zi; computed once per call and reused across all
+    !! (ll, iCore) inner-loop iterations (zi/tmp11/tmp22 are constant within a call). Byte-identical.
+    type(TCubicSplineEval), save :: bkSpl1, bkSpl2
 
     !!
     integer :: ll, ll_a, ll_nu, mm_nu, ll_mu, mm_mu
@@ -1324,31 +1824,40 @@ contains
     nGrid = size(rr2)
     nRadial = size(rr3)
 
-    allocate(V(nGrid))
-    allocate(V_l(nRadial, beckeInt%beckeGridParams%ll_max, 2))
-
-    allocate(tmp22(nGrid))
-    allocate(tmp11(nGrid))
+    ! allocate scratch once (saved buffers reused across calls); see note in the declarations
+    if (.not. allocated(V)) allocate(V(nGrid))
+    if (.not. allocated(V_l)) allocate(V_l(nRadial, beckeInt%beckeGridParams%ll_max, 2))
+    if (.not. allocated(tmp22)) allocate(tmp22(nGrid))
+    if (.not. allocated(tmp11)) allocate(tmp11(nGrid))
     tmp22(:) = acos((rr2 - 1.0_dp) / (rr2 + 1.0_dp)) / pi
     tmp11(:) = acos((rr1 - 1.0_dp) / (rr1 + 1.0_dp)) / pi
 
-    allocate(rrin(nRadial))
-    allocate(rrin2(nRadial))
-    allocate(rho_lm(nRadial))
-    allocate(rho_lm2(nRadial))
-    allocate(rho_lm3(nRadial))
-    allocate(zi(nRadial))
+    if (.not. allocated(rrin)) allocate(rrin(nRadial))
+    if (.not. allocated(rrin2)) allocate(rrin2(nRadial))
+    if (.not. allocated(rho_lm)) allocate(rho_lm(nRadial))
+    if (.not. allocated(rho_lm2)) allocate(rho_lm2(nRadial))
+    if (.not. allocated(rho_lm3)) allocate(rho_lm3(nRadial))
+    if (present(beckeIntsErf) .and. .not. allocated(rho_lm_acc)) allocate(rho_lm_acc(nRadial))
+    if (.not. allocated(zi)) allocate(zi(nRadial))
 
     ! nu-orbital
     ll_nu = atom1%angmoms(imap%type(1, iInt))
     mm_nu = imap%type(3, iInt) - 1
-    rrin2(:) = atom1%rad(imap%type(1, iInt))%getValue(rr3)
+    if (present(radValBk1)) then
+      rrin2(:) = radValBk1(:, imap%type(1, iInt))
+    else
+      rrin2(:) = atom1%rad(imap%type(1, iInt))%getValue(rr3)
+    end if
 
     zi(:) = acos(beckeInt%radialQuadrature%xx) / pi
 
-    allocate(V_sum(nGrid))
-    allocate(AA2(nGrid))
-    allocate(CCC(nRadial))
+    ! precompute spline brackets/weights once for tmp11 and tmp22 (reused across all ll and iCore)
+    call precompCubicSplineBrackets(zi, tmp11, bkSpl1)
+    call precompCubicSplineBrackets(zi, tmp22, bkSpl2)
+
+    if (.not. allocated(V_sum)) allocate(V_sum(nGrid))
+    if (.not. allocated(AA2)) allocate(AA2(nGrid))
+    if (.not. allocated(CCC)) allocate(CCC(nRadial))
     V_sum(:) = 0.0_dp
     AA2(:) = 0.0_dp
     CCC(:) = 0.0_dp
@@ -1357,7 +1866,11 @@ contains
     do iCore = 1, atom1%nCore
 
       ! evaluate the radial part of the inner integrand
-      rrin(:) = rrin2 * atom1%corerad(iCore)%getValue(rr3)
+      if (present(coreValBk1)) then
+        rrin(:) = rrin2 * coreValBk1(:, iCore)
+      else
+        rrin(:) = rrin2 * atom1%corerad(iCore)%getValue(rr3)
+      end if
       ll_a = atom1%coreAngmoms(iCore)
 
       ! evaluate the correction to the poisson solver, necessary only for small omega
@@ -1377,7 +1890,10 @@ contains
         V_l(:, ll+1, 1) = CCC
         V_l(:, ll+1, 2) = res
         do iGridPt = 1, nGrid
-          call get_cubic_spline(zi, V_l(:, ll+1, 1), V_l(:, ll+1, 2), tmp11(iGridPt), yy2)
+          yy2 = bkSpl1%aa(iGridPt) * V_l(bkSpl1%left(iGridPt), ll+1, 1)&
+              & + bkSpl1%bb(iGridPt) * V_l(bkSpl1%right(iGridPt), ll+1, 1)&
+              & + bkSpl1%wl(iGridPt) * V_l(bkSpl1%left(iGridPt), ll+1, 2)&
+              & + bkSpl1%wr(iGridPt) * V_l(bkSpl1%right(iGridPt), ll+1, 2)
           AA2(iGridPt) = AA2(iGridPt) + yy2 / rr1(iGridPt)
         end do
       end if
@@ -1392,14 +1908,30 @@ contains
           ! solve the equation for ll
           charge = 0.0_dp
           call solvePoisson(ll, rho_lm2, zi, charge)
-          call TBeckeIntegrator_solveHelmholz(beckeInt, ll, rho_lm)
           ! interpolate
-          rho_lm(:) = rho_lm2 - rho_lm
+          if (present(beckeIntsErf)) then
+            ! erf long-range = V_Coulomb - sum_i c_i*V_Yukawa(alpha_i); only the screened solve is
+            ! screening-dependent, so accumulate sum_i c_i*Helmholtz_i and share everything else.
+            rho_lm_acc(:) = 0.0_dp
+            do iYukLoc = 1, size(beckeIntsErf)
+              if (yukCoeffErf(iYukLoc) == 0.0_dp) cycle
+              rho_lm(:) = rrin
+              call TBeckeIntegrator_solveHelmholz(beckeIntsErf(iYukLoc), ll, rho_lm)
+              rho_lm_acc(:) = rho_lm_acc + yukCoeffErf(iYukLoc) * rho_lm
+            end do
+            rho_lm(:) = rho_lm2 - rho_lm_acc
+          else
+            call TBeckeIntegrator_solveHelmholz(beckeInt, ll, rho_lm)
+            rho_lm(:) = rho_lm2 - rho_lm
+          end if
           call get2ndNaturalSplineDerivs(zi, rho_lm, res)
           V_l(:, ll+1, 1) = rho_lm
           V_l(:, ll+1, 2) = res
           do iGridPt = 1, nGrid
-            call get_cubic_spline(zi, V_l(:, ll+1, 1), V_l(:, ll+1, 2), tmp11(iGridPt), yy2)
+            yy2 = bkSpl1%aa(iGridPt) * V_l(bkSpl1%left(iGridPt), ll+1, 1)&
+                & + bkSpl1%bb(iGridPt) * V_l(bkSpl1%right(iGridPt), ll+1, 1)&
+                & + bkSpl1%wl(iGridPt) * V_l(bkSpl1%left(iGridPt), ll+1, 2)&
+                & + bkSpl1%wr(iGridPt) * V_l(bkSpl1%right(iGridPt), ll+1, 2)
             V(iGridPt) = V(iGridPt) + yy2 * tsymbol
           end do
         end if
@@ -1435,7 +1967,11 @@ contains
     ! nu-orbital -> mu_orbital
     ll_nu = atom2%angmoms(imap%type(2, iInt))
     mm_nu = imap%type(3, iInt) - 1
-    rrin2(:) = atom2%rad(imap%type(2, iInt))%getValue(rr3)
+    if (present(radValBk2)) then
+      rrin2(:) = radValBk2(:, imap%type(2, iInt))
+    else
+      rrin2(:) = atom2%rad(imap%type(2, iInt))%getValue(rr3)
+    end if
 
     AA2(:) = 0.0_dp
     V_sum(:) = 0.0_dp
@@ -1443,7 +1979,11 @@ contains
     ! start the sigma loop for all core electrons of atom2
     do iCore = 1, atom2%nCore
       ! evaluate the radial part of the inner integrand
-      rrin(:) = rrin2 * atom2%corerad(iCore)%getValue(rr3)
+      if (present(coreValBk2)) then
+        rrin(:) = rrin2 * coreValBk2(:, iCore)
+      else
+        rrin(:) = rrin2 * atom2%corerad(iCore)%getValue(rr3)
+      end if
       ll_a = atom2%coreAngmoms(iCore)
       zi(:) = acos(beckeInt%radialQuadrature%xx) / pi
 
@@ -1464,7 +2004,10 @@ contains
         V_l(:, ll+1, 1) = CCC
         V_l(:, ll+1, 2) = res
         do iGridPt = 1, nGrid
-          call get_cubic_spline(zi, V_l(:, ll+1, 1), V_l(:, ll+1, 2), tmp22(iGridPt), yy2)
+          yy2 = bkSpl2%aa(iGridPt) * V_l(bkSpl2%left(iGridPt), ll+1, 1)&
+              & + bkSpl2%bb(iGridPt) * V_l(bkSpl2%right(iGridPt), ll+1, 1)&
+              & + bkSpl2%wl(iGridPt) * V_l(bkSpl2%left(iGridPt), ll+1, 2)&
+              & + bkSpl2%wr(iGridPt) * V_l(bkSpl2%right(iGridPt), ll+1, 2)
           AA2(iGridPt) = AA2(iGridPt) + yy2 / rr2(iGridPt)
         end do
       end if
@@ -1480,16 +2023,31 @@ contains
           ! solve the equation for ll
           charge = 0.0_dp
           call solvePoisson(ll, rho_lm2, zi, charge)
-          call TBeckeIntegrator_solveHelmholz(beckeInt, ll, rho_lm)
 
           ! interpolate
-          rho_lm(:) = rho_lm2 - rho_lm
+          if (present(beckeIntsErf)) then
+            ! erf long-range = V_Coulomb - sum_i c_i*V_Yukawa(alpha_i); accumulate sum_i c_i*Helmholtz_i
+            rho_lm_acc(:) = 0.0_dp
+            do iYukLoc = 1, size(beckeIntsErf)
+              if (yukCoeffErf(iYukLoc) == 0.0_dp) cycle
+              rho_lm(:) = rrin
+              call TBeckeIntegrator_solveHelmholz(beckeIntsErf(iYukLoc), ll, rho_lm)
+              rho_lm_acc(:) = rho_lm_acc + yukCoeffErf(iYukLoc) * rho_lm
+            end do
+            rho_lm(:) = rho_lm2 - rho_lm_acc
+          else
+            call TBeckeIntegrator_solveHelmholz(beckeInt, ll, rho_lm)
+            rho_lm(:) = rho_lm2 - rho_lm
+          end if
 
           call get2ndNaturalSplineDerivs(zi, rho_lm, res)
           V_l(:, ll+1, 1) = rho_lm
           V_l(:, ll+1, 2) = res
           do iGridPt = 1, nGrid
-            call get_cubic_spline(zi, V_l(:, ll+1, 1), V_l(:, ll+1, 2), tmp22(iGridPt), yy2)
+            yy2 = bkSpl2%aa(iGridPt) * V_l(bkSpl2%left(iGridPt), ll+1, 1)&
+                & + bkSpl2%bb(iGridPt) * V_l(bkSpl2%right(iGridPt), ll+1, 1)&
+                & + bkSpl2%wl(iGridPt) * V_l(bkSpl2%left(iGridPt), ll+1, 2)&
+                & + bkSpl2%wr(iGridPt) * V_l(bkSpl2%right(iGridPt), ll+1, 2)
             V(iGridPt) = V(iGridPt) + yy2 * tsymbol
           end do
         end if

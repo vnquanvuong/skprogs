@@ -8,7 +8,7 @@ program HFAtom
   use input, only : read_input_1, read_input_2, echo_input
   use core_overlap, only : overlap, nuclear, kinetic
   use confinement, only : TConf, confType, TPowerConf, TPowerConf_init, TWsConf, TWsConf_init
-  use coulomb_hfex, only : coulomb, hfex, hfex_lr
+  use coulomb_hfex, only : coulomb, hfex, hfex_lr, hfex_lr_erf
   use densitymatrix, only : densmatrix
   use hamiltonian, only : build_hamiltonian
   use diagonalizations, only : diagonalize, diagonalize_overlap
@@ -20,7 +20,7 @@ program HFAtom
   use utilities, only : check_electron_number, check_convergence
   use zora_routines, only : scaled_zora
   use cmdargs, only : parse_command_arguments
-  use common_poisson, only : TBeckeGridParams
+  use common_poisson, only : TBeckeGridParams, TBeckeIntegrator, TBeckeIntegrator_init
   use xcfunctionals, only : xcFunctional
   use average_potential, only : getAveragePotential
   use globals
@@ -46,11 +46,17 @@ program HFAtom
   !! CAM beta parameter
   real(dp) :: camBeta
 
+  !! number of Yukawa terms in the erf/erfc expansion for erf range-separated functionals (wB97X/wB97M)
+  integer :: mYukawa
+
   !! Kinetic energy reference for average potential calculation
   real(dp), allocatable :: kinetic_energy_ref
 
   !! holds parameters, defining a Becke integration grid
   type(TBeckeGridParams) :: grid_params
+
+  !! becke integrator (grid built once here, then passed into hfex_lr for the single-Yukawa LC/CAM paths)
+  type(TBeckeIntegrator) :: t_integ
 
   !! general confinement potential
   class(TConf), allocatable :: conf
@@ -62,7 +68,7 @@ program HFAtom
   call read_input_1(nuc, max_l, occ_shells, maxiter, scftol, poly_order, min_alpha, max_alpha,&
       & num_alpha, tAutoAlphas, alpha, conf_type, confInp, num_occ, num_power, num_alphas, xcnr,&
       & tPrintEigvecs, tZora, mixnr, mixing_factor, xalpha_const, omega, camAlpha, camBeta,&
-      & grid_params)
+      & mYukawa, grid_params)
 
   problemsize = num_power * num_alphas
 
@@ -121,12 +127,20 @@ program HFAtom
   if (xcnr == xcFunctional%HF_Exchange) then
     call hfex(kk, max_l, num_alpha, alpha, poly_order, problemsize)
   elseif (xcFunctional%isLongRangeCorrected(xcnr)) then
-    call hfex_lr(kk_lr, max_l, num_alpha, alpha, poly_order, problemsize, omega, grid_params)
+    call TBeckeIntegrator_init(t_integ, grid_params)
+    call hfex_lr(kk_lr, max_l, num_alpha, alpha, poly_order, problemsize, omega, grid_params, t_integ)
   elseif (xcFunctional%isGlobalHybrid(xcnr)) then
     call hfex(kk, max_l, num_alpha, alpha, poly_order, problemsize)
   elseif (xcFunctional%isCAMY(xcnr)) then
     call hfex(kk, max_l, num_alpha, alpha, poly_order, problemsize)
-    call hfex_lr(kk_lr, max_l, num_alpha, alpha, poly_order, problemsize, omega, grid_params)
+    call TBeckeIntegrator_init(t_integ, grid_params)
+    call hfex_lr(kk_lr, max_l, num_alpha, alpha, poly_order, problemsize, omega, grid_params, t_integ)
+  elseif (xcFunctional%isRangeSepErf(xcnr)) then
+    ! erf range-separated hybrids (wB97X/wB97M): full-range K plus the erf long-range exchange built as
+    ! a c_i-weighted sum of mYukawa long-range Yukawa supermatrices (kk_lr = sum_i c_i Yukawa_i).
+    call hfex(kk, max_l, num_alpha, alpha, poly_order, problemsize)
+    call hfex_lr_erf(kk_lr, max_l, num_alpha, alpha, poly_order, problemsize, omega, mYukawa,&
+        & grid_params)
   end if
 
   ! convergence flag
@@ -146,7 +160,7 @@ program HFAtom
 
   ! kinetic energy, nuclear-electron, and confinement matrix elements which are constant during SCF
   call build_hamiltonian(pMixer, 0, tt, uu, nuc, vconf_matrix, jj, kk, kk_lr, pp, max_l, num_alpha,&
-      & poly_order, problemsize, xcnr, num_mesh_points, weight, abcissa, vxc, alpha, pot_old,&
+      & poly_order, problemsize, xcnr, num_mesh_points, weight, abcissa, vxc, vtau, alpha, pot_old,&
       & pot_new, tZora, ff, camAlpha, camBeta)
 
   ! self-consistency cycles
@@ -166,12 +180,12 @@ program HFAtom
 
     ! get electron density, derivatives, exc related potentials and energy densities
     call density_grid(pp, max_l, num_alpha, poly_order, alpha, num_mesh_points, abcissa, dzdr,&
-        & dz, xcnr, omega, camAlpha, camBeta, rho, drho, ddrho, vxc, exc, xalpha_const)
+        & dz, xcnr, omega, camAlpha, camBeta, rho, drho, ddrho, tau, vxc, vtau, exc, xalpha_const)
 
     ! build Fock matrix and get total energy during SCF
     call build_hamiltonian(pMixer, iScf, tt, uu, nuc, vconf_matrix, jj, kk, kk_lr, pp, max_l,&
-        & num_alpha, poly_order, problemsize, xcnr, num_mesh_points, weight, abcissa, vxc, alpha,&
-        & pot_old, pot_new, tZora, ff, camAlpha, camBeta)
+        & num_alpha, poly_order, problemsize, xcnr, num_mesh_points, weight, abcissa, vxc, vtau,&
+        & alpha, pot_old, pot_new, tZora, ff, camAlpha, camBeta)
 
     if (tZora) then
       call getTotalEnergyZora(tt, uu, nuc, vconf_matrix, jj, kk, kk_lr, pp, max_l, num_alpha,&
@@ -247,7 +261,7 @@ program HFAtom
   call write_potentials_file_standard(num_mesh_points, abcissa, weight, vxc, rho, nuc, pp, max_l,&
       & num_alpha, poly_order, alpha, problemsize)
 
-  call write_densities_file_standard(num_mesh_points, abcissa, weight, rho, drho, ddrho)
+  call write_densities_file_standard(num_mesh_points, abcissa, weight, rho, drho, ddrho, tau)
 
   ! write wave functions and eventually invert to have positive starting gradient
   call write_waves_file_standard(num_mesh_points, abcissa, weight, alpha, num_alpha, poly_order,&

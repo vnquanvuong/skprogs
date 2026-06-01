@@ -8,13 +8,14 @@ module density
   private
 
   public :: density_at_point, density_at_point_1st, density_at_point_2nd
+  public :: tau_at_point
   public :: wavefunction, wavefunction_1st, wavefunction_2nd
   public :: basis, basis_1st, basis_2nd
   public :: basis_times_basis, basis_times_basis_1st, basis_times_basis_2nd
   public :: basis_1st_times_basis_1st, basis_2nd_times_basis_2nd
   public :: basis_times_basis_times_r2, basis_times_basis_1st_times_r2,&
       & basis_times_basis_2nd_times_r2, basis_times_basis_1st_times_r,&
-      & basis_1st_times_basis_1st_times_r2
+      & basis_1st_times_basis_1st_times_r2, basis_times_basis_times_rminus2
 
 
 contains
@@ -220,6 +221,81 @@ contains
     end do
 
   end function density_at_point_2nd
+
+
+  !> Calculates the (positive-definite) kinetic energy density tau = 1/2 sum_i |grad psi_i|^2
+  !! at a radial point in space analytically.
+  !! For a spherically-symmetric atom the angular part of the gradient contributes a centrifugal
+  !! l(l+1)/r^2 term in addition to the radial-derivative term, see Rev. Mod. Phys. 32, 186 (1960).
+  pure function tau_at_point(pp, max_l, num_alpha, poly_order, alpha, rr)
+
+    !> density matrix supervector
+    real(dp), intent(in) :: pp(0:,:,:)
+
+    !> maximum angular momentum
+    integer, intent(in) :: max_l
+
+    !> number of exponents in each shell
+    integer, intent(in) :: num_alpha(0:)
+
+    !> highest polynomial order + l in each shell
+    integer, intent(in) :: poly_order(0:)
+
+    !> basis exponents
+    real(dp), intent(in) :: alpha(0:,:)
+
+    !> radial point in space, i.e. abcissa
+    real(dp), intent(in) :: rr
+
+    !> resulting analytical kinetic energy density at a radial point in space
+    real(dp) :: tau_at_point
+
+    !> auxiliary variables
+    integer :: ii, jj, kk, ll, mm, nn, oo, start
+
+    tau_at_point = 0.0_dp
+
+    do ii = 0, max_l
+      ll = 0
+      do jj = 1, num_alpha(ii)
+        do kk = 1, poly_order(ii)
+          ll = ll + 1
+
+          ! set global index correctly
+          oo = ll - 1
+          do mm = jj, num_alpha(ii)
+
+            ! catch start index for polynomials, different depending on alpha block
+            start = 1
+            if (mm == jj) start = kk
+
+            do nn = start, poly_order(ii)
+              oo = oo + 1
+
+              if (ll == oo) then
+                tau_at_point = tau_at_point + pp(ii, ll, oo) * (&
+                    & basis_1st_times_basis_1st(alpha(ii, jj), kk, alpha(ii, mm), nn, ii, rr)&
+                    & + basis_times_basis_times_rminus2(alpha(ii, jj), kk, alpha(ii, mm), nn, ii,&
+                    & rr) * real(ii * (ii + 1), dp))
+              end if
+
+              if (ll /= oo) then
+                tau_at_point = tau_at_point + 2.0_dp * pp(ii, ll, oo) * (&
+                    & basis_1st_times_basis_1st(alpha(ii, jj), kk, alpha(ii, mm), nn, ii, rr)&
+                    & + basis_times_basis_times_rminus2(alpha(ii, jj), kk, alpha(ii, mm), nn, ii,&
+                    & rr) * real(ii * (ii + 1), dp))
+              end if
+
+            end do
+          end do
+        end do
+      end do
+    end do
+
+    ! tau = 1/2 sum_i |grad psi_i|^2
+    tau_at_point = tau_at_point * 0.5_dp
+
+  end function tau_at_point
 
 
   !> Calculates wavefunction at a radial point in space analytically.
@@ -988,5 +1064,61 @@ contains
         & basis_1st_times_basis_1st_times_r2 = 0.0_dp
 
   end function basis_1st_times_basis_1st_times_r2
+
+
+  !> Evaluates product of two basis functions divided by r^2.
+  !! r^(m-1)*e^(-alpha*r)*r^(n-1)*exp(-beta*r)/r^2=r^(m+n-4)*exp(-(alpha+beta)*r)
+  pure function basis_times_basis_times_rminus2(alpha, poly1, beta, poly2, ll, rr)
+
+    !> basis exponent of 1st basis
+    real(dp), intent(in) :: alpha
+
+    !> highest polynomial order in 1st basis shell
+    integer, intent(in) :: poly1
+
+    !> basis exponent of 2nd basis
+    real(dp), intent(in) :: beta
+
+    !> highest polynomial order in 2nd basis shell
+    integer, intent(in) :: poly2
+
+    !> angular momentum
+    integer, intent(in) :: ll
+
+    !> radial point in space, i.e. abcissa
+    real(dp), intent(in) :: rr
+
+    !> product of two primitive Slater basis functions divided by r^2
+    real(dp) :: basis_times_basis_times_rminus2
+
+    !> normalization pre-factors
+    real(dp) :: normalization1, normalization2
+
+    !> auxiliary variables
+    integer :: mm, nn
+    real(dp) :: ab
+
+    mm = poly1 + ll
+    nn = poly2 + ll
+    ab = - (alpha + beta)
+
+    normalization1 = (2.0_dp * alpha)**(mm) * sqrt(2.0_dp * alpha) / sqrt(fak(2 * mm))
+    normalization2 = (2.0_dp * beta)**(nn) * sqrt(2.0_dp * beta) / sqrt(fak(2 * nn))
+
+    ! catch 0^0
+    if ((rr == 0.0_dp) .and. ((mm + nn - 4) == 0)) then
+      basis_times_basis_times_rminus2 = normalization1 * normalization2 * exp(ab * rr)
+    else
+      basis_times_basis_times_rminus2 = normalization1 * normalization2 * rr**(mm + nn - 4)&
+          & * exp(ab * rr)
+    end if
+
+    ! NOTE: there are cases where (mm + nn - 4) < 0, resulting in a singularity (for example in the
+    ! kinetic energy density of a product of 1s-orbitals). This does not matter numerically, because
+    ! the product is later multiplied by l(l+1), which is zero in such cases.
+
+    if (abs(basis_times_basis_times_rminus2) < 1.0d-20) basis_times_basis_times_rminus2 = 0.0_dp
+
+  end function basis_times_basis_times_rminus2
 
 end module density

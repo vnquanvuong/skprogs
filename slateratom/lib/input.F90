@@ -5,6 +5,7 @@ module input
 
   use common_accuracy, only : dp
   use common_poisson, only : TBeckeGridParams
+  use erfyukawa, only : erfYukawaDefaultM
 
   use confinement, only : TConfInp, confType
   use xcfunctionals, only : xcFunctional
@@ -21,7 +22,7 @@ contains
   subroutine read_input_1(nuc, max_l, occ_shells, maxiter, scftol, poly_order, min_alpha,&
       & max_alpha, num_alpha, tAutoAlphas, alpha, conf_type, confInp, num_occ, num_power,&
       & num_alphas, xcnr, tPrintEigvecs, tZora, mixnr, mixing_factor, xalpha_const, omega,&
-      & camAlpha, camBeta, grid_params)
+      & camAlpha, camBeta, mYukawa, grid_params)
 
     !> nuclear charge, i.e. atomic number
     integer, intent(out) :: nuc
@@ -98,6 +99,9 @@ contains
     !> CAM beta parameter
     real(dp), intent(out) :: camBeta
 
+    !> number of Yukawa terms in the erf/erfc expansion for erf range-separated functionals (wB97X/wB97M)
+    integer, intent(out) :: mYukawa
+
     !> holds parameters, defining a Becke integration grid
     type(TBeckeGridParams), intent(out) :: grid_params
 
@@ -110,13 +114,24 @@ contains
     omega = 0.0_dp
     camAlpha = 0.0_dp
     camBeta = 0.0_dp
+    mYukawa = erfYukawaDefaultM
 
     write(*, '(A)') 'Enter nuclear charge, maximal angular momentum (s=0), max. SCF, SCF tol., ZORA'
     read(*,*) nuc, max_l, maxiter, scftol, tZora
 
     write(*, '(A)') 'Enter XC functional:&
-        & 0: HF, 1: X-Alpha, 2: LDA-PW91, 3: GGA-PBE96, 4: GGA-BLYP, 5: LCY-PBE96, 6: LCY-BNL,&
-        & 7: PBE0, 8: B3LYP, 9: CAMY-B3LYP, 10: CAMY-PBEh'
+        & 0: HF, 1: X-Alpha;&
+        & [LDA] 2: LDA-PW91;&
+        & [GGA] 3: PBE96, 4: revPBE, 5: RPBE, 6: BLYP, 7: B97-D, 8: B97-3c, 9: OPBE;&
+        & [mGGA] 10: r2SCAN, 11: B97M, 12: TPSS, 13: TASK, 14: M06-L, 15: MN15-L;&
+        & [hyb+GGA] 16: PBE0, 17: B3LYP, 18: B97, 19: B97-1, 20: B97-2, 21: B97-3, 22: B97-K,&
+        & 23: revPBE0, 24: O3LYP;&
+        & [hyb+mGGA] 25: r2SCANh, 26: r2SCAN0, 27: r2SCAN50, 28: PW6B95, 29: TPSSh, 30: M06,&
+        & 31: M06-2X, 32: MN15, 33: CF22D;&
+        & [RS+GGA] 34: LCY-PBE96, 35: LCY-BNL, 36: LC-wPBE, 37: LC-PBE, 38: LC-BNL, 39: wB97;&
+        & [RS+hyb+GGA] 40: HSE06, 41: HSE12, 42: CAMY-B3LYP, 43: CAMY-PBEh, 44: CAM-B3LYP,&
+        & 45: CAM-PBEh, 46: WHPBE0, 47: wB97X, 48: wB97X-D, 49: wB97X-D3, 50: wB97X-V;&
+        & [RS+hyb+mGGA] 51: wB97M-V/wB97M-D3'
     read(*,*) xcnr
 
     if (xcFunctional%isNotImplemented(xcnr)) then
@@ -134,19 +149,107 @@ contains
       read(*,*) camAlpha
     elseif (xcnr == xcFunctional%HYB_B3LYP) then
       camAlpha = 0.2_dp
+    elseif (xcnr == xcFunctional%HYB_B97_2) then
+      camAlpha = 0.21_dp
+    elseif (xcnr == xcFunctional%HYB_B97_3) then
+      camAlpha = 0.269288_dp
+    elseif (xcnr == xcFunctional%HMGGA_r2SCANh) then
+      camAlpha = 0.10_dp
+    elseif (xcnr == xcFunctional%HMGGA_r2SCAN0) then
+      camAlpha = 0.25_dp
+    elseif (xcnr == xcFunctional%HMGGA_PW6B95) then
+      camAlpha = 0.28_dp
+    elseif (xcnr == xcFunctional%HMGGA_MN15) then
+      camAlpha = 0.44_dp
+    elseif (xcnr == xcFunctional%HMGGA_M06_2X) then
+      camAlpha = 0.54_dp
+    elseif (xcnr == xcFunctional%HYB_revPBE0) then
+      camAlpha = 0.25_dp
+    elseif (xcnr == xcFunctional%HMGGA_TPSSh) then
+      camAlpha = 0.10_dp
+    elseif (xcnr == xcFunctional%HMGGA_r2SCAN50) then
+      camAlpha = 0.50_dp
+    elseif (xcnr == xcFunctional%HMGGA_M06) then
+      camAlpha = 0.27_dp
+    elseif (xcnr == xcFunctional%HMGGA_CF22D) then
+      camAlpha = 0.462806_dp
+    elseif (xcnr == xcFunctional%HYB_B97) then
+      camAlpha = 0.1943_dp
+    elseif (xcnr == xcFunctional%HYB_B97_1) then
+      camAlpha = 0.21_dp
+    elseif (xcnr == xcFunctional%HYB_B97_K) then
+      camAlpha = 0.42_dp
+    elseif (xcnr == xcFunctional%HYB_O3LYP) then
+      camAlpha = 0.1161_dp
     elseif (xcFunctional%isCAMY(xcnr)) then
       write(*, '(A)') 'Enter range-separation parameter, CAM alpha, CAM beta:'
       read(*,*) omega, camAlpha, camBeta
+    elseif (xcnr == xcFunctional%WB97X_V) then
+      ! wB97X-V: erf range-separated hybrid GGA. Exact exchange = camAlpha*K_full + camBeta*K_erfLR,
+      ! with camAlpha = alpha+beta = 0.167 (short-range fraction) and camBeta = -beta = 0.833 (so the
+      ! long-range fraction is 1.0); omega = 0.30. VV10 nonlocal correlation is dropped (not SK-able).
+      omega = 0.30_dp
+      camAlpha = 0.167_dp
+      camBeta = 0.833_dp
+      write(*, '(A)') 'Enter number of Yukawa terms M for the erf/erfc expansion:'
+      read(*,*) mYukawa
+    elseif (xcnr == xcFunctional%WB97M_V) then
+      ! wB97M-V / wB97M-D3: erf range-separated hybrid meta-GGA. camAlpha = alpha+beta = 0.15,
+      ! camBeta = -beta = 0.85, omega = 0.30. VV10 dropped (-V); pair with D3 for the -D3 variant.
+      omega = 0.30_dp
+      camAlpha = 0.15_dp
+      camBeta = 0.85_dp
+      write(*, '(A)') 'Enter number of Yukawa terms M for the erf/erfc expansion:'
+      read(*,*) mYukawa
+    elseif (xcFunctional%isRangeSepErf(xcnr)) then
+      ! erf range-separated functionals (screened HSE / LC / CAM, set below). camAlpha = alpha+beta
+      ! (libxc rsh_coeff), camBeta = -beta. omega is hard-coded here to the functional's defining
+      ! value; for the screened/composite libxc functionals it must match the value libxc uses.
+      if (xcnr == xcFunctional%HSE06) then
+        omega = 0.11_dp; camAlpha = 0.25_dp; camBeta = -0.25_dp        ! screened short-range HF
+      elseif (xcnr == xcFunctional%LC_WPBE) then
+        omega = 0.40_dp; camAlpha = 0.0_dp; camBeta = 1.0_dp           ! 100% long-range HF
+      elseif (xcnr == xcFunctional%LC_PBE) then
+        omega = 0.40_dp; camAlpha = 0.0_dp; camBeta = 1.0_dp
+      elseif (xcnr == xcFunctional%LC_BNL) then
+        omega = 0.33_dp; camAlpha = 0.0_dp; camBeta = 1.0_dp
+      elseif (xcnr == xcFunctional%CAM_B3LYP) then
+        omega = 0.33_dp; camAlpha = 0.19_dp; camBeta = 0.46_dp
+      elseif (xcnr == xcFunctional%CAM_PBEH) then
+        omega = 0.70_dp; camAlpha = 1.0_dp; camBeta = -0.80_dp
+      elseif (xcnr == xcFunctional%WHPBE0) then
+        omega = 0.20_dp; camAlpha = 0.25_dp; camBeta = 0.25_dp
+      elseif (xcnr == xcFunctional%HSE12) then
+        omega = 0.0978977840165_dp; camAlpha = 0.313_dp; camBeta = -0.313_dp  ! screened short-range HF
+      elseif (xcnr == xcFunctional%WB97) then
+        omega = 0.40_dp; camAlpha = 0.0_dp; camBeta = 1.0_dp           ! 100% long-range HF
+      elseif (xcnr == xcFunctional%WB97X) then
+        omega = 0.30_dp; camAlpha = 0.157706_dp; camBeta = 0.842294_dp ! wB97X (Chai-HG 2008)
+      elseif (xcnr == xcFunctional%WB97X_D) then
+        omega = 0.20_dp; camAlpha = 0.222036_dp; camBeta = 0.777964_dp ! wB97X-D (+D2 at runtime)
+      elseif (xcnr == xcFunctional%WB97X_D3) then
+        omega = 0.25_dp; camAlpha = 0.195728_dp; camBeta = 0.804272_dp ! wB97X-D3 (+D3 at runtime)
+      end if
+      write(*, '(A)') 'Enter number of Yukawa terms M for the erf/erfc expansion:'
+      read(*,*) mYukawa
     end if
 
     if (xcFunctional%isLongRangeCorrected(xcnr) .or. xcFunctional%isCAMY(xcnr)&
-        & .or. xcFunctional%isGlobalHybrid(xcnr)) then
+        & .or. xcFunctional%isGlobalHybrid(xcnr) .or. xcFunctional%isRangeSepErf(xcnr)) then
       write(*, '(A)') 'NRadial NAngular ll_max rm'
       read(*,*) grid_params%nRadial, grid_params%nAngular, grid_params%ll_max, grid_params%rm
     end if
 
     if ((xcnr == xcFunctional%HF_Exchange) .and. tZora) then
       write(*, '(A)') 'ZORA only available for DFT!'
+      stop
+    end if
+    if (xcFunctional%isMGGA(xcnr) .and. tZora) then
+      write(*, '(A)') 'Meta-GGA functionals are not supported together with ZORA.'
+      stop
+    end if
+    if (xcFunctional%isRangeSepErf(xcnr) .and. tZora) then
+      write(*, '(A)') 'Erf range-separated functionals (wB97X/wB97M) are not supported with ZORA.'
       stop
     end if
     if (xcnr == xcFunctional%X_Alpha) then
@@ -386,6 +489,8 @@ contains
     if (xcnr == xcFunctional%HYB_B3LYP) write(*, '(A)') 'Global hybrid: B3LYP'
     if (xcnr == xcFunctional%CAMY_B3LYP) write(*, '(A)') 'CAM: CAMY-B3LYP'
     if (xcnr == xcFunctional%CAMY_PBEh) write(*, '(A)') 'CAM: CAMY-PBEh'
+    if (xcnr == xcFunctional%WB97X_V) write(*, '(A)') 'Erf range-separated (Yukawa-sum): wB97X-V'
+    if (xcnr == xcFunctional%WB97M_V) write(*, '(A)') 'Erf range-separated (Yukawa-sum): wB97M-V / wB97M-D3'
 
     write(*, '(A,I6)') 'Max. number of SCF iterations: ', maxiter
     write(*, '(A,ES9.2E2)') 'SCF tolerance [a.u.]: ', scftol

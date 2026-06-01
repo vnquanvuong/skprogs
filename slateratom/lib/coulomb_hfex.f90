@@ -6,13 +6,14 @@ module coulomb_hfex
   use common_poisson, only : TBeckeGridParams, TBeckeIntegrator, TBeckeIntegrator_init,&
       & TBeckeIntegrator_setKernelParam, TBeckeIntegrator_precompFdMatrix,&
       & TBeckeIntegrator_buildLU, TBeckeIntegrator_getCoords, TBeckeIntegrator_solveHelmholz
+  use erfyukawa, only : getErfRangeSepYukawas, erfYukawaMaxM
   use utilities, only : fak
   use core_overlap, only : v
 
   implicit none
   private
 
-  public :: coulomb, hfex, hfex_lr
+  public :: coulomb, hfex, hfex_lr, hfex_lr_erf
 
 
 contains
@@ -246,7 +247,7 @@ contains
 
   !> Builds HF exchange supermatrix (long-range, range-separated version),
   !! see Rev. Mod. Phys. 32, 186 (1960) eqn. 7/8 and eqn. 21
-  subroutine hfex_lr(kk, max_l, num_alpha, alpha, poly_order, problemsize, omega, grid_params)
+  subroutine hfex_lr(kk, max_l, num_alpha, alpha, poly_order, problemsize, omega, grid_params, t_integ)
 
     !> Hartree-Fock exchange supermatrix
     real(dp), intent(out) :: kk(0:,:,:,0:,:,:)
@@ -285,8 +286,9 @@ contains
     integer :: ii, jj, kkk, ll, mm, nn, oo, pp, qq, rr, ss, tt, uu, vv
     integer :: nu, nlp, nlq, nmr, nms
 
-    !! instance of becke integrator
-    type(TBeckeIntegrator) :: t_integ
+    !> becke integrator: its grid is pre-built by the caller and reused across screenings; this
+    !! routine only (re)builds the screened FD matrix + LU for the given omega
+    type(TBeckeIntegrator), intent(inout) :: t_integ
 
     !! inner integral
     real(dp), allocatable :: Vin(:,:,:,:)
@@ -308,10 +310,8 @@ contains
     nRadial = grid_params%nRadial
     ll_max = grid_params%ll_max
 
-    ! inititalize the becke integrator
-    call TBeckeIntegrator_init(t_integ, grid_params)
-
-    ! set the kernel parameter
+    ! the becke integrator grid is built once by the caller (hfex_lr_erf) and reused across all M
+    ! Yukawa screenings; here we only (re)build the screened FD matrix + LU for this omega
     call TBeckeIntegrator_setKernelParam(t_integ, omega)
     call TBeckeIntegrator_precompFdMatrix(t_integ)
     call TBeckeIntegrator_buildLU(t_integ)
@@ -588,6 +588,78 @@ contains
     end do
 
   end subroutine hfex_lr
+
+
+  !> Builds the erf long-range exact-exchange supermatrix as a c_i-weighted sum of long-range Yukawa
+  !! exchange supermatrices, K_erfLR = sum_i c_i K_LRYukawa(beta_i*omega) -- the building block of the
+  !! erf-based range-separated functionals (HSE / LC / CAM / wB97 family). Because the dimensionless
+  !! coefficients satisfy sum_i c_i = 1, this sum approximates the erf(omega r)/r exchange to the
+  !! M-term Yukawa-sum accuracy (erf = 1/r - erfc, with the Yukawa sum approximating erfc; the error
+  !! shrinks with mYukawa, ~1e-5 at M=14), so it slots into the existing CAMY assembly in place of the
+  !! single-Yukawa long-range term. Cost is mYukawa independent Helmholtz builds, done once before the
+  !! SCF loop.
+  subroutine hfex_lr_erf(kk, max_l, num_alpha, alpha, poly_order, problemsize, omega, mYukawa,&
+      & grid_params)
+
+    !> erf long-range Hartree-Fock exchange supermatrix
+    real(dp), intent(out) :: kk(0:,:,:,0:,:,:)
+
+    !> maximum angular momentum
+    integer, intent(in) :: max_l
+
+    !> number of exponents in each shell
+    integer, intent(in) :: num_alpha(0:)
+
+    !> basis exponents
+    real(dp), intent(in) :: alpha(0:,:)
+
+    !> highest polynomial order + l in each shell
+    integer, intent(in) :: poly_order(0:)
+
+    !> maximum size of the eigenproblem
+    integer, intent(in) :: problemsize
+
+    !> range-separation parameter
+    real(dp), intent(in) :: omega
+
+    !> requested number of Yukawa terms in the erf/erfc expansion
+    integer, intent(in) :: mYukawa
+
+    !> holds parameters, defining a Becke integration grid
+    type(TBeckeGridParams), intent(in) :: grid_params
+
+    !! single-Yukawa long-range exchange supermatrix
+    real(dp), allocatable :: kk_i(:,:,:,:,:,:)
+
+    !! becke integrator, built once and reused across all M Yukawa terms (the grid is screening-
+    !! independent; a per-term grid init was ~38% of the long-range exchange cost)
+    type(TBeckeIntegrator) :: t_integ
+
+    !! Yukawa exponents alpha_i = beta_i*omega and coefficients c_i
+    real(dp) :: yukAlpha(erfYukawaMaxM), yukCoeff(erfYukawaMaxM)
+
+    !! number of Yukawa terms returned and loop index
+    integer :: nYukawa, iYuk
+
+    call getErfRangeSepYukawas(mYukawa, omega, nYukawa, yukAlpha, yukCoeff)
+
+    allocate(kk_i, mold=kk)
+    kk(:,:,:,:,:,:) = 0.0_dp
+
+    ! Build the Becke integrator grid ONCE and reuse it across all M Yukawa terms; the grid is
+    ! screening-independent (a redundant per-term grid init was ~38% of the M cost). hfex_lr rebuilds
+    ! only the screened FD matrix + LU per term -- numerically identical to building M integrators.
+    call TBeckeIntegrator_init(t_integ, grid_params)
+    do iYuk = 1, nYukawa
+      ! skip zero-coefficient terms (e.g. the padded 9th term of the M=9 fit) -- they contribute
+      ! nothing but would otherwise cost a full screened-exchange supermatrix build
+      if (yukCoeff(iYuk) == 0.0_dp) cycle
+      call hfex_lr(kk_i, max_l, num_alpha, alpha, poly_order, problemsize, yukAlpha(iYuk),&
+          & grid_params, t_integ)
+      kk(:,:,:,:,:,:) = kk + yukCoeff(iYuk) * kk_i
+    end do
+
+  end subroutine hfex_lr_erf
 
 
   !> Auxiliary function,

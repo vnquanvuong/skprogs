@@ -9,9 +9,27 @@ from sktools import twocenter_grids
 from sktools import radial_grid
 
 
-SUPPORTED_FUNCTIONALS = {'lda' : 1, 'pbe' : 2, 'blyp' : 3, 'lcy-pbe' : 4,
-                         'lcy-bnl' : 5, 'pbe0' : 6, 'b3lyp' : 7,
-                         'camy-b3lyp' : 8, 'camy-pbeh' : 9}
+# Category-grouped, contiguous IDs (must match sktwocnt/lib/xcfunctionals.f90; = slateratom - 1).
+SUPPORTED_FUNCTIONALS = {
+    # LDA
+    'lda' : 1,
+    # GGA (pure)
+    'pbe' : 2, 'revpbe' : 3, 'rpbe' : 4, 'blyp' : 5, 'b97-d' : 6, 'b97-3c' : 7, 'opbe' : 8,
+    # meta-GGA (pure)
+    'r2scan' : 9, 'b97m' : 10, 'tpss' : 11, 'task' : 12, 'm06-l' : 13, 'mn15-l' : 14,
+    # global hybrid + GGA
+    'pbe0' : 15, 'b3lyp' : 16, 'b97' : 17, 'b97-1' : 18, 'b97-2' : 19, 'b97-3' : 20,
+    'b97-k' : 21, 'revpbe0' : 22, 'o3lyp' : 23,
+    # global hybrid + meta-GGA
+    'r2scanh' : 24, 'r2scan0' : 25, 'r2scan50' : 26, 'pw6b95' : 27, 'tpssh' : 28,
+    'm06' : 29, 'm06-2x' : 30, 'mn15' : 31, 'cf22d' : 32,
+    # range-separated + GGA (pure LC)
+    'lcy-pbe' : 33, 'lcy-bnl' : 34, 'lc-wpbe' : 35, 'lc-pbe' : 36, 'lc-bnl' : 37, 'wb97' : 38,
+    # range-separated + global hybrid + GGA
+    'hse06' : 39, 'hse12' : 40, 'camy-b3lyp' : 41, 'camy-pbeh' : 42, 'cam-b3lyp' : 43,
+    'cam-pbeh' : 44, 'whpbe0' : 45, 'wb97x' : 46, 'wb97x-d' : 47, 'wb97x-d3' : 48, 'wb97x-v' : 49,
+    # range-separated + global hybrid + meta-GGA
+    'wb97m-v' : 50}
 
 INPUT_FILE = "sktwocnt.in"
 STDOUT_FILE = "output"
@@ -133,7 +151,13 @@ class SktwocntInput:
                                                 iatom)
         xcn = self._functional.type
         if xcn in ('lcy-bnl', 'lcy-pbe', 'pbe0', 'b3lyp', 'camy-b3lyp',
-                   'camy-pbeh'):
+                   'camy-pbeh', 'b97-2', 'b97-3', 'r2scanh', 'r2scan0',
+                   'pw6b95', 'mn15', 'm06-2x', 'wb97x-v', 'wb97m-v',
+                   'revpbe0', 'tpssh', 'r2scan50', 'm06', 'cf22d',
+                   'hse06', 'hse12', 'lc-wpbe', 'lc-pbe', 'lc-bnl',
+                   'cam-b3lyp', 'cam-pbeh', 'whpbe0',
+                   'b97', 'b97-1', 'b97-k', 'o3lyp',
+                   'wb97', 'wb97x', 'wb97x-d', 'wb97x-d3'):
             atomfiles.dens_wavefuncs = self._store_dens_wavefuncs(
                 workdir, atomdata.dens_wavefuncs, iatom)
         atomfiles.occshells = atomdata.occshells
@@ -215,8 +239,12 @@ class SktwocntInput:
             becke = '2000 194 11 1.0'
             fp.write("{:f}\n".format(self._functional.omega))
             fp.write("{:s}\n".format(becke))
-        # B3LYP
-        elif self._functional.type == 'b3lyp':
+        # B3LYP and other global hybrids with fixed HFX fraction (alpha hard-coded in sktwocnt):
+        # only the Becke grid is written
+        elif self._functional.type in ('b3lyp', 'b97-2', 'b97-3', 'r2scanh',
+                                        'r2scan0', 'pw6b95', 'mn15', 'm06-2x',
+                                        'revpbe0', 'tpssh', 'r2scan50', 'm06', 'cf22d',
+                                        'b97', 'b97-1', 'b97-k', 'o3lyp'):
             # hardcoded parameters for the Becke integration,
             # -> should probably be moved to skdef.hsd
             becke = '2000 194 11 1.0'
@@ -233,6 +261,14 @@ class SktwocntInput:
                                                self._functional.alpha,
                                                self._functional.beta))
             fp.write("{:s}\n".format(becke))
+        # erf range-separated hybrids (wB97X-V/wB97M-V, Phase-2 screened/LC/CAM GGAs, B97 wB97):
+        # number of Yukawa terms M, then the Becke grid (omega, camAlpha, camBeta hard-coded in sktwocnt)
+        elif self._functional.type in ('wb97x-v', 'wb97m-v', 'hse06', 'hse12', 'lc-wpbe', 'lc-pbe',
+                                        'lc-bnl', 'cam-b3lyp', 'cam-pbeh', 'whpbe0',
+                                        'wb97', 'wb97x', 'wb97x-d', 'wb97x-d3'):
+            becke = '2000 194 11 1.0'
+            fp.write("{:d}\n".format(self._functional.myukawa))
+            fp.write("{:s}\n".format(becke))
 
         fp.write("{:f} {:f} {:e} {:f}\n".format(
             self._grid.gridstart, self._grid.gridseparation,
@@ -243,7 +279,13 @@ class SktwocntInput:
 
     def _write_twocnt_atom_block(self, fp, atomfiles):
         if self._functional.type in ('lcy-bnl', 'lcy-pbe', 'pbe0', 'b3lyp',
-                                     'camy-b3lyp', 'camy-pbeh'):
+                                     'camy-b3lyp', 'camy-pbeh', 'b97-2', 'b97-3',
+                                     'r2scanh', 'r2scan0', 'pw6b95', 'mn15', 'm06-2x',
+                                     'wb97x-v', 'wb97m-v', 'revpbe0', 'tpssh', 'r2scan50',
+                                     'm06', 'cf22d', 'hse06', 'hse12', 'lc-wpbe', 'lc-pbe',
+                                     'lc-bnl', 'cam-b3lyp', 'cam-pbeh', 'whpbe0',
+                                     'b97', 'b97-1', 'b97-k', 'o3lyp',
+                                     'wb97', 'wb97x', 'wb97x-d', 'wb97x-d3'):
             fp.write("{:d} {:d}\n".format(len(atomfiles.wavefuncs),
                                           len(atomfiles.dens_wavefuncs)))
         else:
@@ -253,7 +295,13 @@ class SktwocntInput:
             fp.write("'{}' {:d}\n".format(wavefuncfile, ll))
 
         if self._functional.type in ('lcy-bnl', 'lcy-pbe', 'pbe0', 'b3lyp',
-                                     'camy-b3lyp', 'camy-pbeh'):
+                                     'camy-b3lyp', 'camy-pbeh', 'b97-2', 'b97-3',
+                                     'r2scanh', 'r2scan0', 'pw6b95', 'mn15', 'm06-2x',
+                                     'wb97x-v', 'wb97m-v', 'revpbe0', 'tpssh', 'r2scan50',
+                                     'm06', 'cf22d', 'hse06', 'hse12', 'lc-wpbe', 'lc-pbe',
+                                     'lc-bnl', 'cam-b3lyp', 'cam-pbeh', 'whpbe0',
+                                     'b97', 'b97-1', 'b97-k', 'o3lyp',
+                                     'wb97', 'wb97x', 'wb97x-d', 'wb97x-d3'):
             occdict = {}
             for xx in atomfiles.occshells:
                 occdict[xx[0]] = xx[1]

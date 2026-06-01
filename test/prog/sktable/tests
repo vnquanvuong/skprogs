@@ -14,3 +14,54 @@ LCY-BNL/Non-Relativistic
 LCY-PBE96/Non-Relativistic
 CAMY-B3LYP/Non-Relativistic
 CAMY-PBEh/Non-Relativistic
+
+#! Ordered/named to match the xcFunctional enum: GGA / MGGA (pure) / HYB (global hybrid GGA) /
+#! HMGGA (global hybrid meta-GGA) / range-separated GGA / range-separated hybrid GGA / RS hybrid mGGA.
+#! pure GGA
+GGA-revPBE/Non-Relativistic
+GGA-RPBE/Non-Relativistic
+GGA-B97-D/Non-Relativistic
+GGA-B97-3c/Non-Relativistic
+GGA-OPBE/Non-Relativistic
+#! pure meta-GGA
+MGGA-r2SCAN/Non-Relativistic
+MGGA-B97M/Non-Relativistic
+MGGA-TPSS/Non-Relativistic
+MGGA-TASK/Non-Relativistic
+MGGA-M06-L/Non-Relativistic
+MGGA-MN15-L/Non-Relativistic
+#! global hybrid GGA
+HYB-B97/Non-Relativistic
+HYB-B97-1/Non-Relativistic
+HYB-B97-2/Non-Relativistic
+HYB-B97-3/Non-Relativistic
+HYB-B97-K/Non-Relativistic
+HYB-revPBE0/Non-Relativistic
+HYB-O3LYP/Non-Relativistic
+#! global hybrid meta-GGA
+HMGGA-r2SCANh/Non-Relativistic
+HMGGA-r2SCAN0/Non-Relativistic
+HMGGA-r2SCAN50/Non-Relativistic
+HMGGA-PW6B95/Non-Relativistic
+HMGGA-TPSSh/Non-Relativistic
+HMGGA-M06/Non-Relativistic
+HMGGA-M06-2X/Non-Relativistic
+HMGGA-MN15/Non-Relativistic
+HMGGA-CF22D/Non-Relativistic
+#! range-separated GGA (long-range corrected, camAlpha = 0)
+LC-wPBE/Non-Relativistic
+LC-PBE/Non-Relativistic
+LC-BNL/Non-Relativistic
+wB97/Non-Relativistic
+#! range-separated global hybrid GGA (camAlpha > 0)
+HSE06/Non-Relativistic
+HSE12/Non-Relativistic
+CAM-B3LYP/Non-Relativistic
+CAM-PBEh/Non-Relativistic
+WHPBE0/Non-Relativistic
+wB97X/Non-Relativistic
+wB97X-D/Non-Relativistic
+wB97X-D3/Non-Relativistic
+wB97X-V/Non-Relativistic
+#! range-separated global hybrid meta-GGA
+wB97M-V/Non-Relativistic

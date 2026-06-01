@@ -7,7 +7,7 @@
 *.pyc
 __pycache__
 *build/
-*_build/
+*_build*/
 _gitmsg.saved.txt
 *.egg-info
 dist

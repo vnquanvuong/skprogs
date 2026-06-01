@@ -122,20 +122,15 @@ contains
       hf_x_energy = hf_ex_energy(kk, pp, max_l, num_alpha, poly_order)
       ! PBE0 with camAlpha * HFX
       hf_x_energy = camAlpha * hf_x_energy
-    elseif (xcFunctional%isCAMY(xcnr)) then
+    elseif (xcFunctional%isGlobalHybrid(xcnr)) then
+      ! all other global hybrids: camAlpha * HFX
+      hf_x_energy = camAlpha * hf_ex_energy(kk, pp, max_l, num_alpha, poly_order)
+    elseif (xcFunctional%isCAMY(xcnr) .or. xcFunctional%isRangeSepErf(xcnr)) then
+      ! CAMY (single Yukawa) and erf range-separated (wB97X/wB97M) hybrids: kk_lr is the erf long-range
+      ! exchange supermatrix (sum_i c_i Yukawa_i for wB97), assembled as camAlpha*K_full + camBeta*K_LR.
       hf_x_energy = hf_ex_energy(kk, pp, max_l, num_alpha, poly_order)
       hf_x_energy_lr = hf_ex_energy(kk_lr, pp, max_l, num_alpha, poly_order)
-      if (xcnr == xcFunctional%CAMY_B3LYP) then
-        ! CAMY-B3LYP parameters a=0.20, b=0.72, c=0.81 (libXC defaults)
-        hf_x_energy = camAlpha * hf_x_energy
-        hf_x_energy_lr = camBeta * hf_x_energy_lr
-        hf_x_energy = hf_x_energy + hf_x_energy_lr
-      elseif (xcnr == xcFunctional%CAMY_PBEh) then
-        ! CAMY-PBEh
-        hf_x_energy = camAlpha * hf_x_energy
-        hf_x_energy_lr = camBeta * hf_x_energy_lr
-        hf_x_energy = hf_x_energy + hf_x_energy_lr
-      end if
+      hf_x_energy = camAlpha * hf_x_energy + camBeta * hf_x_energy_lr
     end if
 
     ! pure HF:
@@ -150,9 +145,11 @@ contains
     ! pure HF
     if (xcnr == xcFunctional%HF_Exchange) then
       total_energy = dummy1 + 0.5_dp * coulomb + 0.5_dp * hf_x_energy
-    ! (semi-)local functionals
-    elseif ((xcnr == xcFunctional%X_Alpha) .or. xcFunctional%isLDA(xcnr)&
-        & .or. xcFunctional%isGGA(xcnr)) then
+    ! (semi-)local functionals (pure, NOT hybrid meta-GGAs/hybrid GGAs which also need HFX below)
+    elseif (((xcnr == xcFunctional%X_Alpha) .or. xcFunctional%isLDA(xcnr)&
+        & .or. xcFunctional%isGGA(xcnr) .or. xcFunctional%isMGGA(xcnr))&
+        & .and. .not. xcFunctional%isGlobalHybrid(xcnr) .and. .not. xcFunctional%isRangeSepErf(xcnr))&
+        & then
       total_energy = dummy1 + 0.5_dp * coulomb + dft_xc_energy
     ! global hybrids, LC, CAM functionals
     else
@@ -295,6 +292,9 @@ contains
       hf_x_energy = hf_ex_energy(kk, pp, max_l, num_alpha, poly_order)
       ! PBE0 with camAlpha * HFX
       hf_x_energy = camAlpha * hf_x_energy
+    elseif (xcFunctional%isGlobalHybrid(xcnr)) then
+      ! all other global hybrids: camAlpha * HFX
+      hf_x_energy = camAlpha * hf_ex_energy(kk, pp, max_l, num_alpha, poly_order)
     elseif (xcFunctional%isCAMY(xcnr)) then
       hf_x_energy = hf_ex_energy(kk, pp, max_l, num_alpha, poly_order)
       hf_x_energy_lr = hf_ex_energy(kk_lr, pp, max_l, num_alpha, poly_order)
@@ -324,6 +324,14 @@ contains
     elseif (xcnr == xcFunctional%X_Alpha .or. xcFunctional%isLDA(xcnr)&
         & .or. xcFunctional%isGGA(xcnr)) then
       total_energy = eigsum - 0.5_dp * coulomb + dft_xc_energy - xc_pot
+    ! meta-GGAs (pure AND hybrid): the eigenvalue-sum total energy subtracts the xc double-counting
+    ! term xc_pot = \int vxc rho, but for a meta-GGA the Fock matrix (and hence eigsum) also contains
+    ! the tau-potential operator, whose double-counting term Tr[K_tau P] is not available here. Tested
+    ! before the global-hybrid/CAMY branches because every hybrid meta-GGA also satisfies those
+    ! predicates. Meta-GGA + ZORA is therefore not yet supported (mirrors the guard in input.F90).
+    elseif (xcFunctional%isMGGA(xcnr)) then
+      write(*, '(A)') 'Meta-GGA functionals are not supported together with ZORA.'
+      stop
     ! range-separated (long-range corrected) hybrid functionals
     elseif (xcFunctional%isLongRangeCorrected(xcnr)) then
       total_energy = eigsum - 0.5_dp * coulomb - 0.5_dp * hf_x_energy + dft_xc_energy - xc_pot

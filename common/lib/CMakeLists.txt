@@ -12,6 +12,7 @@ set(sources-f90
   constants.F90
   coordtrans.F90
   eigensolver.F90
+  erfyukawa.f90
   fdiff.F90
   fifo.F90
   fifobase.F90

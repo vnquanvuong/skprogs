@@ -22,6 +22,7 @@ module common_sphericalharmonics
 
     procedure :: getValue => TRealTessY_getValue
     procedure :: getValue_1d => TRealTessY_getValue_1d
+    procedure :: getGradTheta_1d => TRealTessY_getGradTheta_1d
     procedure :: destruct => TRealTessY_destruct
 
   end type TRealTessY
@@ -238,5 +239,92 @@ contains
     end select
 
   end function calc_realtessy_1d
+
+
+  !> Returns d/dtheta of the real tesseral spherical harmonic (phi = 0 plane),
+  !! needed for the meta-GGA two-center vtau operator grad(phi_A).grad(phi_B).
+  elemental function TRealTessY_getGradTheta_1d(this, theta) result(dang)
+
+    !> real tesseral spherical harmonics instance
+    class(TRealTessY), intent(in) :: this
+
+    !> spherical coordinate theta
+    real(dp), intent(in) :: theta
+
+    !! d/dtheta of the real tesseral spherical harmonic function
+    real(dp) :: dang
+
+    dang = calc_realtessy_1d_dtheta(this%ll, this%mm, theta)
+
+  end function TRealTessY_getGradTheta_1d
+
+
+  !> Analytic d/dtheta of calc_realtessy_1d (same normalization constants).
+  elemental function calc_realtessy_1d_dtheta(ll, mm, theta) result(drty)
+
+    !> angular momentum (l)
+    integer, intent(in) :: ll
+
+    !> magnetic quantum number (m)
+    integer, intent(in) :: mm
+
+    !> spherical coordinate theta
+    real(dp), intent(in) :: theta
+
+    !! d/dtheta of the real tesseral spherical harmonic function
+    real(dp) :: drty
+
+    real(dp) :: ss, cc
+
+    ss = sin(theta)
+    cc = cos(theta)
+
+    drty = 0.0_dp
+
+    select case (ll)
+    case (0)
+      drty = 0.0_dp
+    case (1)
+      select case (mm)
+      case (-1)
+        drty = 0.4886025119029198_dp * cc
+      case (0)
+        drty = - 0.4886025119029198_dp * ss
+      case (1)
+        drty = 0.4886025119029198_dp * cc
+      end select
+    case (2)
+      select case (mm)
+      case (-2)
+        drty = 1.092548430592079_dp * ss * cc
+      case (-1)
+        drty = 1.092548430592079_dp * (cc * cc - ss * ss)
+      case (0)
+        drty = - 1.892349391515120_dp * ss * cc
+      case (1)
+        drty = 1.092548430592079_dp * (cc * cc - ss * ss)
+      case (2)
+        drty = 1.092548430592079_dp * ss * cc
+      end select
+    case (3)
+      select case (mm)
+      case (-3)
+        drty = 1.770130769779931_dp * ss * ss * cc
+      case (-2)
+        drty = 1.445305721320277_dp * ss * (2.0_dp * cc * cc - ss * ss)
+      case (-1)
+        drty = 0.4570457994644658_dp * cc * (15.0_dp * cc * cc - 11.0_dp)
+      case (0)
+        drty = - 0.3731763325901155_dp * ss * (15.0_dp * cc * cc - 3.0_dp)
+      case (1)
+        drty = 0.4570457994644658_dp * cc * (15.0_dp * cc * cc - 11.0_dp)
+      case (2)
+        drty = 1.445305721320277_dp * ss * (2.0_dp * cc * cc - ss * ss)
+      case (3)
+        drty = 1.770130769779931_dp * ss * ss * cc
+      end select
+    end select
+
+  end function calc_realtessy_1d_dtheta
 
 end module common_sphericalharmonics

@@ -154,8 +154,14 @@ module globals
   !> 2nd deriv. of density on grid
   real(dp), allocatable :: ddrho(:,:)
 
+  !> kinetic energy density on grid
+  real(dp), allocatable :: tau(:,:)
+
   !> xc potential on grid
   real(dp), allocatable :: vxc(:,:)
+
+  !> orbital-dependent tau potential on grid (meta-GGA)
+  real(dp), allocatable :: vtau(:,:)
 
   !> exc energy density on grid
   real(dp), allocatable :: exc(:)
@@ -215,8 +221,10 @@ contains
     allocate(rho(num_mesh_points, 2))
     allocate(drho(num_mesh_points, 2))
     allocate(ddrho(num_mesh_points, 2))
+    allocate(tau(num_mesh_points, 2))
     allocate(exc(num_mesh_points))
     allocate(vxc(num_mesh_points, 2))
+    allocate(vtau(num_mesh_points, 2))
 
     allocate(ss(0:max_l, problemsize, problemsize))
     write(*, '(A,I0,A)') 'Size of one Supervectors is ', size(ss), ' double precision elements'
@@ -251,6 +259,8 @@ contains
     rho(:,:) = 0.0_dp
     drho(:,:) = 0.0_dp
     ddrho(:,:) = 0.0_dp
+    tau(:,:) = 0.0_dp
+    vtau(:,:) = 0.0_dp
 
     eigval(:,:,:) = 0.0_dp
     eigval_scaled(:,:,:) = 0.0_dp

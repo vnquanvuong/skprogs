@@ -147,13 +147,14 @@ class SkgenSktableAssembly:
         valshells2 = myinput.atomconfig2.valenceshells
         grid = myinput.grid
 
-        # if range-separated hybrid is used, add the RangeSep tag
+        # Add the RangeSep CAM(omega, alpha, beta) tag for every functional that carries exact
+        # exchange. All global hybrids and range-separated functionals expose omega/alpha/beta
+        # (global hybrids as (1.0, camAlpha, 0.0)); pure semilocal functionals do not and get no tag.
+        # (xcf is a ClassDict: missing keys raise KeyError, so test membership rather than getattr.)
         extra_tag = None
-        xcn = myinput.xcf.type
-        if xcn in ('camy-b3lyp', 'camy-pbeh', 'lcy-bnl', 'lcy-pbe', 'pbe0',
-                   'b3lyp'):
-            extra_tag = generate_cam_extratag((
-                myinput.xcf.omega, myinput.xcf.alpha, myinput.xcf.beta))
+        xcf = myinput.xcf
+        if 'omega' in xcf and 'alpha' in xcf and 'beta' in xcf:
+            extra_tag = generate_cam_extratag((xcf.omega, xcf.alpha, xcf.beta))
 
         if self._input.homo:
             onsites, occs, hubbus, spinpolerr, mass = self._get_atomic_data()

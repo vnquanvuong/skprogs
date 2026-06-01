@@ -12,6 +12,9 @@ module common_anglib
   !> true, if Gaunt is initialized
   logical :: tGauntInit_ = .false.
 
+  !> lMax for which the current Gaunt table was built (-1 if none); used to make initGaunt idempotent
+  integer :: lMaxGaunt_ = -1
+
   !> maximum 1st dimension of storeGaunt_
   integer :: iGauMax1_
 
@@ -56,13 +59,17 @@ contains
     !! 1/sqrt(2)
     real(dp), parameter :: rs2 = 0.7071067811865475_dp
 
+    ! Idempotent initialization: if the Gaunt table is already built and already covers the requested
+    ! lMax, reuse it (return); if a larger lMax is now needed, free and rebuild. This lets initGaunt be
+    ! called more than once per run -- e.g. once per Yukawa term when hfex_lr is invoked repeatedly to
+    ! sum the erf range-separated exchange (hfex_lr_erf) -- instead of aborting on the second call.
     if (tGauntInit_) then
-      print *, 'Gaunt already initialized'
-      stop
-    else
-      tGauntInit_ = .true.
-      write(*, '(A,I4)') "==> Initializing anglib: lMax = ", lMax
+      if (lMax <= lMaxGaunt_) return
+      call freeGaunt()
     end if
+    tGauntInit_ = .true.
+    lMaxGaunt_ = lMax
+    write(*, '(A,I4)') "==> Initializing anglib: lMax = ", lMax
 
     call indexGaunt(2 * lMax, lMax, lMax, lMax, lMax, iGauMax1_, iGauMax2_)
 

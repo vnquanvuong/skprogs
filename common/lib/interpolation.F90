@@ -7,6 +7,24 @@ module common_interpolation
   private
 
   public :: poly5zero, spline3_free, polyinter, get_cubic_spline, get2ndNaturalSplineDerivs
+  public :: TCubicSplineEval, precompCubicSplineBrackets
+
+
+  !> Precomputed cubic-spline bracket indices and evaluation weights for a fixed set of abscissas and
+  !! evaluation points, shared across many splines that differ only in their ordinates. See
+  !! precompCubicSplineBrackets.
+  type :: TCubicSplineEval
+
+    !> bracketing abscissa indices for each evaluation point
+    integer, allocatable :: left(:), right(:)
+
+    !> spline weights for the bracketing ordinates fct(left)/fct(right)
+    real(dp), allocatable :: aa(:), bb(:)
+
+    !> spline weights for the bracketing 2nd derivatives dds(left)/dds(right)
+    real(dp), allocatable :: wl(:), wr(:)
+
+  end type TCubicSplineEval
 
 
 contains
@@ -140,16 +158,23 @@ contains
 
     !! auxiliary variables
     integer :: icl, ii, mm
-    real(dp) :: cc(size(xp)), dd(size(xp))
+    !! work arrays cc/dd are kept at a fixed (compile-time) size so they live on the stack rather than
+    !! being heap-allocated on every call. polyinter is invoked once per grid point via the elemental
+    !! TGridorb*_getValue (i.e. millions of times), so a per-call heap allocation of these tiny arrays
+    !! dominated the runtime/allocator pressure. maxInter is far above any interpolation order used in
+    !! skprogs (ninter = 8); only cc(1:nn)/dd(1:nn) are ever accessed, so results are byte-identical.
+    integer, parameter :: maxInter = 64
+    real(dp) :: cc(maxInter), dd(maxInter)
     real(dp) :: dx, dxnew, dyy, rtmp
 
     nn = size(xp)
 
     ! assert(nn > 1)
     ! assert(size(yp) == nn)
+    ! assert(nn <= maxInter)
 
-    cc(:) = yp
-    dd(:) = yp
+    cc(1:nn) = yp
+    dd(1:nn) = yp
     icl = 1
     dx = abs(xx - xp(icl))
     do ii = 2, nn
@@ -237,6 +262,72 @@ contains
         & + step**2 / 6.0_dp * (bb**2 - 1.0_dp) * bb * dds(right)
 
   end subroutine get_cubic_spline
+
+
+  !> Precomputes cubic-spline bracket indices and evaluation weights for a set of evaluation points
+  !! against fixed abscissas. This lets a caller that evaluates many splines sharing the same
+  !! abscissas (xx) and evaluation points (dxs) — but differing only in the ordinates (fct) and their
+  !! 2nd derivatives (dds) — perform the bisection search and weight setup only once, then evaluate
+  !!   yy = this%aa(i)*fct(this%left(i)) + this%bb(i)*fct(this%right(i))
+  !!      + this%wl(i)*dds(this%left(i)) + this%wr(i)*dds(this%right(i))
+  !! for each point i. The bisection and weight expressions are identical to get_cubic_spline (same
+  !! operations in the same order), so the resulting spline values are byte-identical. Buffers are
+  !! (re)allocated only when absent or the wrong size, so repeated calls with constant sizes are
+  !! allocation-free.
+  subroutine precompCubicSplineBrackets(xx, dxs, this)
+
+    !> abscissas (shared across all splines)
+    real(dp), intent(in) :: xx(:)
+
+    !> evaluation points (shared across all splines)
+    real(dp), intent(in) :: dxs(:)
+
+    !> precomputed bracket indices and evaluation weights
+    type(TCubicSplineEval), intent(inout) :: this
+
+    !! bisection search bounds and midpoint
+    integer :: lo, hi, mid
+
+    !! evaluation-point iterator and number of evaluation points
+    integer :: ii, npts
+
+    !! difference of bracketing abscissas and local weight values
+    real(dp) :: step, a, b
+
+    npts = size(dxs)
+    if (.not. allocated(this%left) .or. size(this%left) /= npts) then
+      if (allocated(this%left)) then
+        deallocate(this%left, this%right, this%aa, this%bb, this%wl, this%wr)
+      end if
+      allocate(this%left(npts), this%right(npts), this%aa(npts), this%bb(npts), this%wl(npts),&
+          & this%wr(npts))
+    end if
+
+    do ii = 1, npts
+      ! bisection search (identical to get_cubic_spline)
+      lo = 1
+      hi = size(xx)
+      do
+        if ((hi - lo) <= 1) exit
+        mid = (hi + lo) / 2
+        if (dxs(ii) >= xx(mid)) then
+          lo = mid
+        else
+          hi = mid
+        end if
+      end do
+      step = xx(hi) - xx(lo)
+      a = (xx(hi) - dxs(ii)) / step
+      b = (dxs(ii) - xx(lo)) / step
+      this%left(ii) = lo
+      this%right(ii) = hi
+      this%aa(ii) = a
+      this%bb(ii) = b
+      this%wl(ii) = step**2 / 6.0_dp * (a**2 - 1.0_dp) * a
+      this%wr(ii) = step**2 / 6.0_dp * (b**2 - 1.0_dp) * b
+    end do
+
+  end subroutine precompCubicSplineBrackets
 
 
   !> Finds the 2nd derivatives of natural splines.

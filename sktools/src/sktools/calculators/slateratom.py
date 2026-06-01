@@ -17,9 +17,27 @@ import sktools.xcfunctionals as xc
 
 LOGGER = logging.getLogger('slateratom')
 
-SUPPORTED_FUNCTIONALS = {'lda' : 2, 'pbe' : 3, 'blyp' : 4, 'lcy-pbe' : 5,
-                         'lcy-bnl' : 6, 'pbe0' : 7, 'b3lyp' : 8,
-                         'camy-b3lyp' : 9, 'camy-pbeh' : 10}
+# Category-grouped, contiguous IDs (must match slateratom/lib/xcfunctionals.F90).
+SUPPORTED_FUNCTIONALS = {
+    # LDA
+    'lda' : 2,
+    # GGA (pure): PBE, BLYP, B97, OPTX families
+    'pbe' : 3, 'revpbe' : 4, 'rpbe' : 5, 'blyp' : 6, 'b97-d' : 7, 'b97-3c' : 8, 'opbe' : 9,
+    # meta-GGA (pure): SCAN, B97, TPSS, TASK, Minnesota
+    'r2scan' : 10, 'b97m' : 11, 'tpss' : 12, 'task' : 13, 'm06-l' : 14, 'mn15-l' : 15,
+    # global hybrid + GGA: PBE, BLYP, B97, revPBE, OPTX
+    'pbe0' : 16, 'b3lyp' : 17, 'b97' : 18, 'b97-1' : 19, 'b97-2' : 20, 'b97-3' : 21,
+    'b97-k' : 22, 'revpbe0' : 23, 'o3lyp' : 24,
+    # global hybrid + meta-GGA: SCAN, PW6B95, TPSS, Minnesota, CF22D
+    'r2scanh' : 25, 'r2scan0' : 26, 'r2scan50' : 27, 'pw6b95' : 28, 'tpssh' : 29,
+    'm06' : 30, 'm06-2x' : 31, 'mn15' : 32, 'cf22d' : 33,
+    # range-separated + GGA (pure LC): Yukawa, wPBE/PBE, BNL, B97
+    'lcy-pbe' : 34, 'lcy-bnl' : 35, 'lc-wpbe' : 36, 'lc-pbe' : 37, 'lc-bnl' : 38, 'wb97' : 39,
+    # range-separated + global hybrid + GGA: HSE, CAMY, CAM, B97
+    'hse06' : 40, 'hse12' : 41, 'camy-b3lyp' : 42, 'camy-pbeh' : 43, 'cam-b3lyp' : 44,
+    'cam-pbeh' : 45, 'whpbe0' : 46, 'wb97x' : 47, 'wb97x-d' : 48, 'wb97x-d3' : 49, 'wb97x-v' : 50,
+    # range-separated + global hybrid + meta-GGA
+    'wb97m-v' : 51}
 
 INPUT_FILE = "slateratom.in"
 STDOUT_FILE = "output"
@@ -187,6 +205,15 @@ class SlateratomInput:
                 self._alpha = None
                 self._beta = None
 
+            # erf range-separated hybrids (wB97X-V/wB97M-V, Phase-2 GGAs, B97 wB97): number of
+            # Yukawa terms M
+            if xcfkey in ('wb97x-v', 'wb97m-v', 'hse06', 'hse12', 'lc-wpbe', 'lc-pbe', 'lc-bnl',
+                          'cam-b3lyp', 'cam-pbeh', 'whpbe0',
+                          'wb97', 'wb97x', 'wb97x-d', 'wb97x-d3'):
+                self._myukawa = functional.myukawa
+            else:
+                self._myukawa = None
+
         else:
             msg = 'Invalid xc-functional type for slateratom'
             raise sc.SkgenException(msg)
@@ -274,8 +301,11 @@ class SlateratomInput:
                 # --> should be moved to skdef.hsd!
                 "2000 194 11 1.0 \t{:s} Becke integrator settings"
                 .format(self._COMMENT)]
-        # B3LYP
-        elif xctype == 'b3lyp':
+        # B3LYP and the other global hybrids with a fixed HFX fraction (hard-coded in slateratom):
+        # only the Becke grid is needed (no alpha line)
+        elif xctype in ('b3lyp', 'b97-2', 'b97-3', 'r2scanh', 'r2scan0', 'pw6b95', 'mn15', 'm06-2x',
+                        'revpbe0', 'tpssh', 'r2scan50', 'm06', 'cf22d',
+                        'b97', 'b97-1', 'b97-k', 'o3lyp'):
             out += [
                 # numerical interator
                 # hardcoded parameters for the Becke integration
@@ -299,6 +329,20 @@ class SlateratomInput:
                 "{:g} {:g} {:g} \t{:s} ".format(
                     self._omega, self._alpha, self._beta, self._COMMENT) + \
                 "range-separation parameter (omega), CAM alpha, CAM beta",
+
+                # numerical interator
+                # hardcoded parameters for the Becke integration
+                # --> should be moved to skdef.hsd!
+                "2000 194 11 1.0 \t{:s} Becke integrator settings"
+                .format(self._COMMENT)]
+        # erf range-separated hybrids (wB97X-V/wB97M-V, Phase-2 screened/LC/CAM GGAs, B97 wB97):
+        # number of Yukawa terms M, then the Becke grid (omega, camAlpha, camBeta hard-coded in slateratom)
+        elif xctype in ('wb97x-v', 'wb97m-v', 'hse06', 'hse12', 'lc-wpbe', 'lc-pbe', 'lc-bnl',
+                        'cam-b3lyp', 'cam-pbeh', 'whpbe0',
+                        'wb97', 'wb97x', 'wb97x-d', 'wb97x-d3'):
+            out += [
+                "{:d} \t{:s} number of Yukawa terms M (erf/erfc expansion)".format(
+                    self._myukawa, self._COMMENT),
 
                 # numerical interator
                 # hardcoded parameters for the Becke integration
@@ -574,11 +618,13 @@ class SlateratomResult:
         fp.readline()
         ngrid = int(fp.readline())
         # noinspection PyNoneFunctionAssignment,PyTypeChecker
-        dens = np.fromfile(fp, dtype=float, count=ngrid * 7, sep=" ")
+        # dens.dat columns: r weight rho drho ddrho zeta r_seitz tau (8 cols)
+        dens = np.fromfile(fp, dtype=float, count=ngrid * 8, sep=" ")
         fp.close()
-        dens.shape = (ngrid, 7)
+        dens.shape = (ngrid, 8)
         grid = oc.RadialGrid(dens[:,0], dens[:,1])
-        density = dens[:,2:5]
+        # rho, drho, ddrho, tau  (tau = col 8 / index 7; needed for meta-GGA superposition)
+        density = dens[:, [2, 3, 4, 7]]
         return oc.GridData(grid, density)
 
     def get_wavefunction012(self, ss, nn, ll):

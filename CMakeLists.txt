@@ -105,6 +105,20 @@ add_subdirectory(sktools)
 ########################### Testing ###########################
 
 string(CONFIGURE "${TEST_RUNNER_TEMPLATE}" TEST_RUNNER)
+
+# Run the built-in `make test` / `ninja test` target in parallel. The CTest test target does not
+# honour make's `-j`, so without this it runs one test at a time. CMAKE_CTEST_ARGUMENTS (CMake
+# >= 3.17) bakes `--parallel <ncpu>` into the target; guarded so 3.16 still configures. The level
+# can still be overridden at run time via `ctest -j<N>` or the CTEST_PARALLEL_LEVEL env variable.
+if(NOT CMAKE_VERSION VERSION_LESS 3.17)
+  include(ProcessorCount)
+  ProcessorCount(_n_test_cpu)
+  if(_n_test_cpu EQUAL 0)
+    set(_n_test_cpu 1)
+  endif()
+  set(CMAKE_CTEST_ARGUMENTS "--parallel;${_n_test_cpu}" "--output-on-failure")
+endif()
+
 enable_testing()
 add_subdirectory(test)
 
