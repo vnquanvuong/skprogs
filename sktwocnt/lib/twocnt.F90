@@ -29,6 +29,7 @@ module twocnt
 
   use gridorbital, only : TGridorb2
   use xcfunctionals, only : xcFunctional
+  use xc_doublecounting, only : getXcDoubleCounting
   use erfyukawa, only : getErfRangeSepYukawas, erfYukawaMaxM
 
   use, intrinsic :: iso_c_binding, only : c_size_t
@@ -38,7 +39,7 @@ module twocnt
       & xc_f03_gga_vxc, xc_f03_mgga_vxc, XC_LDA_X, XC_LDA_X_YUKAWA, XC_LDA_C_PW, XC_GGA_X_PBE,&
       & XC_GGA_C_PBE, XC_GGA_X_B88, XC_GGA_C_LYP, XC_GGA_X_SFAT_PBE, XC_HYB_GGA_XC_B3LYP,&
       & XC_HYB_GGA_XC_CAMY_B3LYP, XC_MGGA_X_R2SCAN, XC_MGGA_C_R2SCAN, XC_UNPOLARIZED,&
-      & xc_f03_func_set_ext_params,&
+      & xc_f03_func_set_ext_params, xc_f03_func_set_dens_threshold,&
       & XC_GGA_XC_B97_D, XC_HYB_GGA_XC_B97_2, XC_HYB_GGA_XC_B97_3, XC_MGGA_X_M06_L,&
       & XC_MGGA_C_M06_L, XC_MGGA_XC_B97M_V, XC_HYB_MGGA_XC_R2SCANH, XC_HYB_MGGA_XC_R2SCAN0,&
       & XC_HYB_MGGA_XC_PW6B95, XC_HYB_MGGA_X_MN15, XC_MGGA_C_MN15, XC_HYB_MGGA_X_M06_2X,&
@@ -53,7 +54,8 @@ module twocnt
       & XC_HYB_GGA_XC_O3LYP, XC_GGA_X_OPTX
 #:elif LIBXC_VERSION_MAJOR == 7
   use xc_f03_lib_m, only : xc_f03_func_t, xc_f03_func_init, xc_f03_func_end, xc_f03_lda_vxc,&
-      & xc_f03_gga_vxc, xc_f03_mgga_vxc, xc_f03_func_set_ext_params, XC_UNPOLARIZED
+      & xc_f03_gga_vxc, xc_f03_mgga_vxc, xc_f03_func_set_ext_params,&
+      & xc_f03_func_set_dens_threshold, XC_UNPOLARIZED
   use xc_f03_funcs_m, only : XC_LDA_X, XC_LDA_X_YUKAWA, XC_LDA_C_PW, XC_GGA_X_PBE, XC_GGA_C_PBE,&
       & XC_GGA_X_B88, XC_GGA_C_LYP, XC_GGA_X_SFAT_PBE, XC_HYB_GGA_XC_B3LYP, XC_HYB_GGA_XC_CAMY_B3LYP,&
       & XC_MGGA_X_R2SCAN, XC_MGGA_C_R2SCAN,&
@@ -110,6 +112,12 @@ module twocnt
 
     !> atomic kinetic energy density on grid (meta-GGA; superimposed tau = tau_A + tau_B)
     type(TGridorb2) :: tau
+
+    !> atomic Hartree (coulomb) potential on grid, for the electrostatic repulsive E_nn - E_H
+    type(TGridorb2) :: vhartree
+
+    !> effective nuclear charge (= electron count; read off the Hartree-potential monopole tail r*v_H)
+    real(dp) :: znuc
 
   end type TAtomdata
 
@@ -204,7 +212,7 @@ module twocnt
 contains
 
   !> Calculates Hamiltonian and overlap matrix elements for different dimer distances.
-  subroutine get_twocenter_integrals(env, inp, imap, skham, skover)
+  subroutine get_twocenter_integrals(env, inp, imap, skham, skover, edcxc, eelec, eonsite, eonsite2)
 
     !> Environment settings
     type(TEnvironment), intent(in) :: env
@@ -217,6 +225,24 @@ contains
 
     !> resulting Hamiltonian and overlap matrices
     real(dp), intent(out), allocatable :: skham(:,:), skover(:,:)
+
+    !> XC double-counting profile E_dc^xc(R) (Hartree-free part of the Harris double counting),
+    !! one value per tabulated dimer distance
+    real(dp), intent(out), allocatable, optional :: edcxc(:)
+
+    !> electrostatic repulsive profile (E_nn - E_H)(R), one value per tabulated dimer distance.
+    !! The full DFTB+ repulsive Spline is then E_rep(R) = -edcxc(R) + eelec(R).
+    real(dp), intent(out), allocatable, optional :: eelec(:)
+
+    !> on-site H0 correction SK block, (10, ndist): the 10 standard SK integrals (ddsig..sssig) of the
+    !! crystal-field shift on atom 1's orbitals from atom 2, one column per tabulated dimer distance.
+    real(dp), intent(out), allocatable, optional :: eonsite(:,:)
+
+    !> the reverse on-site block: atom 2's orbitals shifted by atom 1 (for the heteronuclear B-A.skf).
+    real(dp), intent(out), allocatable, optional :: eonsite2(:,:)
+
+    !! number of tabulated distances and distance index for the double-counting profile pass
+    integer :: ndist, idist
 
     !! abscissas and weight instances for numerical quadrature
     type(TQuadrature) :: quads(2)
@@ -232,6 +258,11 @@ contains
 
     !! integration grids of dimer atoms, holding spherical coordinates (r, theta)
     real(dp), allocatable, target :: grid1(:,:), grid2(:,:), rr3(:,:)
+
+    !! reverse-on-site grid (atom 2 as the structured primary centre; Becke halves reordered)
+    real(dp), allocatable, target :: grid1r(:,:), grid2r(:,:)
+    real(dp), allocatable :: dotsr(:), weightsr(:)
+    integer :: nnh
 
     !! dot product of unit distance vectors and integration weights
     real(dp), allocatable :: dots(:), weights(:), dummyWeights(:)
@@ -363,6 +394,7 @@ contains
       call xc_f03_func_init(xcfunc_xc, XC_HYB_GGA_XC_B97_3, XC_UNPOLARIZED)
     case(xcFunctional%MGGA_B97M)
       call xc_f03_func_init(xcfunc_xc, XC_MGGA_XC_B97M_V, XC_UNPOLARIZED)
+      call xc_f03_func_set_dens_threshold(xcfunc_xc, getDensThreshold())
     case(xcFunctional%WB97X_V)
       ! wB97X-V: combined erf range-separated semilocal hybrid GGA (libxc bakes in omega; the
       ! camAlpha*K_full + camBeta*K_erfLR exact exchange is added in getskintegrals)
@@ -633,6 +665,47 @@ contains
     end if
     write(stdOut, "(A,ES10.3)") "Maximal integration error: ", denserrmax
 
+    if (present(edcxc) .or. present(eelec) .or. present(eonsite) .or. present(eonsite2)) then
+      ndist = size(skham, dim=2)
+      if (present(edcxc)) allocate(edcxc(ndist), source=0.0_dp)
+      if (present(eelec)) allocate(eelec(ndist), source=0.0_dp)
+      if (present(eonsite)) allocate(eonsite(10, ndist), source=0.0_dp)
+      if (present(eonsite2)) allocate(eonsite2(10, ndist), source=0.0_dp)
+      if (inp%tDensitySuperpos) then
+        do idist = 1, ndist
+          dist = inp%r0 + inp%dr * real(idist - 1, dp)
+          call gengrid2_2(quads, coordtrans_becke_12, partition_becke_homo, beckepars, dist, grid1,&
+              & grid2, dots, weights)
+          if (present(edcxc)) then
+            edcxc(idist) = getXcDoubleCountingPair(atom1, atom2, grid1, grid2, dots, weights, inp%iXC,&
+                & inp%camAlpha, inp%camBeta, xcfunc_xc, xcfunc_x, xcfunc_c)
+          end if
+          if (present(eelec)) then
+            eelec(idist) = getElectrostaticPair(atom1, atom2, grid1, grid2, weights, dist)
+          end if
+          if (present(eonsite)) then
+            call getOnsiteH0Pair(atom1, atom2, grid1, grid2, dots, weights, inp%iXC,&
+                & size(quads(1)%xx), size(quads(2)%xx), xcfunc_xc, xcfunc_x, xcfunc_c, eonsite(:, idist))
+          end if
+          if (present(eonsite2)) then
+            nnh = size(weights) / 2
+            if (.not. allocated(grid1r)) allocate(grid1r(2*nnh,2), grid2r(2*nnh,2), dotsr(2*nnh),&
+                & weightsr(2*nnh))
+            grid1r(1:nnh,:) = grid2(nnh+1:,:); grid1r(nnh+1:,:) = grid2(1:nnh,:)
+            grid2r(1:nnh,:) = grid1(nnh+1:,:); grid2r(nnh+1:,:) = grid1(1:nnh,:)
+            dotsr(1:nnh) = dots(nnh+1:); dotsr(nnh+1:) = dots(1:nnh)
+            weightsr(1:nnh) = weights(nnh+1:); weightsr(nnh+1:) = weights(1:nnh)
+            call getOnsiteH0Pair(atom2, atom1, grid1r, grid2r, dotsr, weightsr, inp%iXC,&
+                & size(quads(1)%xx), size(quads(2)%xx), xcfunc_xc, xcfunc_x, xcfunc_c, eonsite2(:, idist))
+            eonsite2(4, idist) = -eonsite2(4, idist)     ! pd sigma  (l1+l2 = 3)
+            eonsite2(5, idist) = -eonsite2(5, idist)     ! pd pi     (l1+l2 = 3)
+            eonsite2(9, idist) = -eonsite2(9, idist)     ! sp sigma  (l1+l2 = 1)
+          end if
+        end do
+      end if
+      write(stdOut, "(A)") "Repulsive profiles (XC double-counting + electrostatic + on-site) done."
+    end if
+
     ! finalize libxc objects (key off which objects were actually initialized above)
     if (inp%iXC == xcFunctional%CAMY_PBEh) then
       call xc_f03_func_end(xcfunc_xsr)
@@ -668,6 +741,293 @@ contains
     end if
 
   end subroutine get_twocenter_integrals
+
+
+  !> Pairwise XC double-counting
+  function getXcDoubleCountingPair(atom1, atom2, grid1, grid2, dots, weights, iXC, camAlpha,&
+      & camBeta, xcfunc_xc, xcfunc_x, xcfunc_c) result(edc)
+
+    !> atomic property instances of dimer atoms
+    type(TAtomdata), intent(in), pointer :: atom1, atom2
+
+    !> integration grids of dimer atoms (spherical coordinates r, theta)
+    real(dp), intent(in), target :: grid1(:,:), grid2(:,:)
+
+    !> dot product of unit distance vectors and integration weights
+    real(dp), intent(in) :: dots(:), weights(:)
+
+    !> xc-functional identifier and CAM parameters
+    integer, intent(in) :: iXC
+    real(dp), intent(in) :: camAlpha, camBeta
+
+    !> libxc handles (combined-xc / separate exchange / separate correlation)
+    type(xc_f03_func_t), intent(in) :: xcfunc_xc, xcfunc_x, xcfunc_c
+
+    !> resulting pairwise XC double counting (Hartree)
+    real(dp) :: edc
+
+    !! radial coordinates of the two atomic grids
+    real(dp), pointer :: r1(:), r2(:)
+
+    !! per-atom and superposed libxc fields (physical density, 4pi-renormalized)
+    real(dp), allocatable :: rhoA(:), rhoB(:), rhorS(:), rhorA(:), rhorB(:)
+    real(dp), allocatable :: drhoA(:), drhoB(:), sigmaS(:), sigmaA(:), sigmaB(:)
+    real(dp), allocatable :: tauA(:), tauB(:), tauS(:), tauAr(:), tauBr(:), zero(:)
+
+    !! double counting of superposition / atom A / atom B
+    real(dp) :: eS, eA, eB
+
+    !! number of grid points
+    integer :: nGrid
+
+    r1 => grid1(:, 1)
+    r2 => grid2(:, 1)
+    nGrid = size(r1)
+    allocate(zero(nGrid), source=0.0_dp)
+
+    ! densities (4pi-normalized stored -> physical via getLibxcRho)
+    rhoA = atom1%rho%getValue(r1)
+    rhoB = atom2%rho%getValue(r2)
+    rhorS = getLibxcRho(rhoA + rhoB)
+    rhorA = getLibxcRho(rhoA)
+    rhorB = getLibxcRho(rhoB)
+
+    ! sigma = |grad rho|^2 (GGA and meta-GGA); sigma_A uses atom A's gradient alone, etc.
+    allocate(sigmaS(nGrid), sigmaA(nGrid), sigmaB(nGrid), source=0.0_dp)
+    if (iXC /= xcFunctional%LDA_PW91) then
+      drhoA = atom1%drho%getValue(r1)
+      drhoB = atom2%drho%getValue(r2)
+      sigmaS = getLibxcSigma(drhoA, drhoB, dots)
+      sigmaA = getLibxcSigma(drhoA, zero, dots)
+      sigmaB = getLibxcSigma(zero, drhoB, dots)
+    end if
+
+    ! tau = kinetic energy density (meta-GGA)
+    allocate(tauS(nGrid), tauAr(nGrid), tauBr(nGrid), source=0.0_dp)
+    if (xcFunctional%isMGGA(iXC)) then
+      tauA = atom1%tau%getValue(r1)
+      tauB = atom2%tau%getValue(r2)
+      tauS = getLibxcRho(tauA + tauB)
+      tauAr = getLibxcRho(tauA)
+      tauBr = getLibxcRho(tauB)
+    end if
+
+    eS = getXcDoubleCounting(iXC, xcfunc_x, xcfunc_c, xcfunc_xc, camAlpha, camBeta, rhorS, sigmaS,&
+        & tauS, weights)
+    eA = getXcDoubleCounting(iXC, xcfunc_x, xcfunc_c, xcfunc_xc, camAlpha, camBeta, rhorA, sigmaA,&
+        & tauAr, weights)
+    eB = getXcDoubleCounting(iXC, xcfunc_x, xcfunc_c, xcfunc_xc, camAlpha, camBeta, rhorB, sigmaB,&
+        & tauBr, weights)
+
+    ! 2*pi: azimuthal (phi) integral for the m=0 cylindrically symmetric density superposition
+    edc = 2.0_dp * pi * (eS - eA - eB)
+
+  end function getXcDoubleCountingPair
+
+
+  !> Pairwise electrostatic repulsive  E_nn - E_H
+  function getElectrostaticPair(atom1, atom2, grid1, grid2, weights, dist) result(enn_eh)
+
+    !> atomic property instances of dimer atoms
+    type(TAtomdata), intent(in), pointer :: atom1, atom2
+
+    !> integration grids of dimer atoms (spherical coordinates r, theta)
+    real(dp), intent(in), target :: grid1(:,:), grid2(:,:)
+
+    !> integration weights and dimer distance
+    real(dp), intent(in) :: weights(:), dist
+
+    !> resulting E_nn - E_H (Hartree)
+    real(dp) :: enn_eh
+
+    !! radial coordinates of the two atomic grids
+    real(dp), pointer :: r1(:), r2(:)
+
+    !! physical densities and Hartree potentials of the two atoms on the grid
+    real(dp), allocatable :: rhoA(:), rhoB(:), vhA(:), vhB(:)
+
+    !! inter-atomic Hartree and nuclear-nuclear energies
+    real(dp) :: e_h, e_nn
+
+    r1 => grid1(:, 1)
+    r2 => grid2(:, 1)
+    rhoA = getLibxcRho(atom1%rho%getValue(r1))      ! physical density (4pi-renormalised)
+    rhoB = getLibxcRho(atom2%rho%getValue(r2))
+    vhA = atom1%vhartree%getValue(r1)
+    vhB = atom2%vhartree%getValue(r2)
+    ! E_H^pair = int rho_A v_H^B (symmetrised); pi = 0.5 * 2pi (azimuthal) for the average
+    e_h = pi * sum((rhoA * vhB + rhoB * vhA) * weights)
+    e_nn = atom1%znuc * atom2%znuc / dist
+    enn_eh = e_nn - e_h
+
+  end function getElectrostaticPair
+
+
+  !> Maps an on-site orbital-pair (la >= lb) and magnetic number m to the standard 10-integral SK
+  !! layout index (ddsig ddpi dddel pdsig pdpi ppsig pppi sdsig spsig sssig = 1..10); 0 if none.
+  pure function onsiteSkIndex(la, lb, mm) result(idx)
+    integer, intent(in) :: la, lb, mm
+    integer :: idx
+    idx = 0
+    select case (la * 100 + lb * 10 + mm)
+    case (220); idx = 1   ! dd sigma
+    case (221); idx = 2   ! dd pi
+    case (222); idx = 3   ! dd delta
+    case (210); idx = 4   ! pd sigma
+    case (211); idx = 5   ! pd pi
+    case (110); idx = 6   ! pp sigma
+    case (111); idx = 7   ! pp pi
+    case (200); idx = 8   ! sd sigma
+    case (100); idx = 9   ! sp sigma
+    case (000); idx = 10  ! ss sigma
+    end select
+  end function onsiteSkIndex
+
+
+  !> On-site H0 correction SK block on atom A from neighbour B
+  subroutine getOnsiteH0Pair(atom1, atom2, grid1, grid2, dots, weights, iXC, nRad, nAng, xcfunc_xc,&
+      & xcfunc_x, xcfunc_c, onsite)
+
+    !> atomic property instances of dimer atoms
+    type(TAtomdata), intent(in), pointer :: atom1, atom2
+
+    !> integration grids of dimer atoms (spherical coordinates r, theta)
+    real(dp), intent(in), target :: grid1(:,:), grid2(:,:)
+
+    !> dot product of unit distance vectors and integration weights
+    real(dp), intent(in) :: dots(:), weights(:)
+
+    !> xc-functional identifier, radial/angular grid sizes, and the libxc handles
+    !! (xcfunc_xc = combined; xcfunc_x / xcfunc_c = separate exchange / correlation)
+    integer, intent(in) :: iXC, nRad, nAng
+    type(xc_f03_func_t), intent(in) :: xcfunc_xc, xcfunc_x, xcfunc_c
+
+    !> resulting on-site SK block (10-integral layout, Hartree)
+    real(dp), intent(out) :: onsite(10)
+
+    !! grid coordinates, and the shift potential V = atom-B neutral potential + xc-potential difference
+    real(dp), pointer :: r1(:), theta1(:), r2(:), theta2(:)
+    real(dp), allocatable :: vshift(:), radv(:,:), radvp(:,:), spher1(:), spher2(:), dspher1(:), dspher2(:)
+
+    !! physical densities and the xc potentials of the superposition / atom A
+    real(dp), allocatable :: rs(:), ra(:), vxs(:), vcs(:), vxa(:), vca(:)
+    real(dp), allocatable :: drhoA(:), drhoB(:), zero(:), onesv(:), sgs(:), sga(:), tas(:), taa(:), lap(:)
+    real(dp), allocatable :: vxg_s(:), vcg_s(:), vxg_a(:), vcg_a(:), dvx_s(:), dvc_s(:), dvx_a(:), dvc_a(:)
+    real(dp), allocatable :: vxt_s(:), vct_s(:), vxt_a(:), vct_a(:), vtaudiff(:), vdum(:)
+
+    !! real tesseral harmonics for the two orbitals (both centred on atom A)
+    type(TRealTessY) :: tes1, tes2
+
+    logical :: isMGGA, combined
+    integer :: i1, i2, l1, l2, mm, nGrid, ii, idx
+    integer(c_size_t) :: n
+    real(dp) :: prefac
+
+    r1 => grid1(:, 1)
+    theta1 => grid1(:, 2)
+    r2 => grid2(:, 1)
+    theta2 => grid2(:, 2)
+    nGrid = size(r1)
+    n = int(nGrid, c_size_t)
+    isMGGA = xcFunctional%isMGGA(iXC)
+    combined = xcFunctional%isCombinedXc(iXC)
+    allocate(radv(nGrid, atom1%nBasis), spher1(nGrid), spher2(nGrid))
+    do ii = 1, atom1%nBasis
+      radv(:, ii) = atom1%rad(ii)%getValue(r1)
+    end do
+    if (isMGGA) then                                   ! orbital radial derivatives for the vtau operator
+      allocate(radvp(nGrid, atom1%nBasis), dspher1(nGrid), dspher2(nGrid))
+      do ii = 1, atom1%nBasis
+        radvp(:, ii) = atom1%drad(ii)%getValue(r1)
+      end do
+    end if
+
+    ! V = (atom-B neutral potential) + (vxc[rho_A+rho_B] - vxc[rho_A]).  vshift holds the local part
+    ! (vrho + GGA divergence); vtaudiff holds the meta-GGA vtau-operator weight difference.
+    allocate(rs(nGrid), ra(nGrid), vxs(nGrid), vcs(nGrid), vxa(nGrid), vca(nGrid), vshift(nGrid),&
+        & vtaudiff(nGrid))
+    rs = getLibxcRho(atom1%rho%getValue(r1) + atom2%rho%getValue(r2))
+    ra = getLibxcRho(atom1%rho%getValue(r1))
+    vxs = 0.0_dp; vcs = 0.0_dp; vxa = 0.0_dp; vca = 0.0_dp; vshift = 0.0_dp; vtaudiff = 0.0_dp
+  #:if LIBXC_VERSION_MAJOR == 6 or LIBXC_VERSION_MAJOR == 7
+    if (iXC == xcFunctional%LDA_PW91) then
+      call xc_f03_lda_vxc(xcfunc_x, n, rs(1), vxs(1))
+      call xc_f03_lda_vxc(xcfunc_c, n, rs(1), vcs(1))
+      call xc_f03_lda_vxc(xcfunc_x, n, ra(1), vxa(1))
+      call xc_f03_lda_vxc(xcfunc_c, n, ra(1), vca(1))
+      vshift = (vxs + vcs) - (vxa + vca)
+    else
+      ! GGA and meta-GGA: density gradients + sigma (and tau for meta-GGA), then the divergence
+      allocate(drhoA(nGrid), drhoB(nGrid), zero(nGrid), sgs(nGrid), sga(nGrid))
+      allocate(vxg_s(nGrid), vcg_s(nGrid), vxg_a(nGrid), vcg_a(nGrid))
+      allocate(dvx_s(nGrid), dvc_s(nGrid), dvx_a(nGrid), dvc_a(nGrid), vdum(nGrid))
+      drhoA = atom1%drho%getValue(r1); drhoB = atom2%drho%getValue(r2); zero = 0.0_dp
+      sgs = getLibxcSigma(drhoA, drhoB, dots); sga = drhoA**2 * rec4pi**2
+      vxg_s = 0.0_dp; vcg_s = 0.0_dp; vxg_a = 0.0_dp; vcg_a = 0.0_dp
+      if (isMGGA) then
+        allocate(tas(nGrid), taa(nGrid), lap(nGrid), vxt_s(nGrid), vct_s(nGrid), vxt_a(nGrid), vct_a(nGrid))
+        tas = getLibxcRho(atom1%tau%getValue(r1) + atom2%tau%getValue(r2))
+        taa = getLibxcRho(atom1%tau%getValue(r1)); lap = 0.0_dp
+        vxt_s = 0.0_dp; vct_s = 0.0_dp; vxt_a = 0.0_dp; vct_a = 0.0_dp
+        if (combined) then                               ! single combined xc handle (x/c slots stay 0)
+          call xc_f03_mgga_vxc(xcfunc_xc, n, rs(1), sgs(1), lap(1), tas(1), vxs(1), vxg_s(1), vdum(1), vxt_s(1))
+          call xc_f03_mgga_vxc(xcfunc_xc, n, ra(1), sga(1), lap(1), taa(1), vxa(1), vxg_a(1), vdum(1), vxt_a(1))
+        else
+          call xc_f03_mgga_vxc(xcfunc_x, n, rs(1), sgs(1), lap(1), tas(1), vxs(1), vxg_s(1), vdum(1), vxt_s(1))
+          call xc_f03_mgga_vxc(xcfunc_c, n, rs(1), sgs(1), lap(1), tas(1), vcs(1), vcg_s(1), vdum(1), vct_s(1))
+          call xc_f03_mgga_vxc(xcfunc_x, n, ra(1), sga(1), lap(1), taa(1), vxa(1), vxg_a(1), vdum(1), vxt_a(1))
+          call xc_f03_mgga_vxc(xcfunc_c, n, ra(1), sga(1), lap(1), taa(1), vca(1), vcg_a(1), vdum(1), vct_a(1))
+        end if
+        vtaudiff = (vxt_s + vct_s) - (vxt_a + vct_a)
+      else
+        if (combined) then                               ! single combined xc handle (x/c slots stay 0)
+          call xc_f03_gga_vxc(xcfunc_xc, n, rs(1), sgs(1), vxs(1), vxg_s(1))
+          call xc_f03_gga_vxc(xcfunc_xc, n, ra(1), sga(1), vxa(1), vxg_a(1))
+        else
+          call xc_f03_gga_vxc(xcfunc_x, n, rs(1), sgs(1), vxs(1), vxg_s(1))
+          call xc_f03_gga_vxc(xcfunc_c, n, rs(1), sgs(1), vcs(1), vcg_s(1))
+          call xc_f03_gga_vxc(xcfunc_x, n, ra(1), sga(1), vxa(1), vxg_a(1))
+          call xc_f03_gga_vxc(xcfunc_c, n, ra(1), sga(1), vca(1), vcg_a(1))
+        end if
+      end if
+      ! divergence of vsigma*grad(rho): superposition (both gradients) minus atom A (drho2 = 0)
+      call getDivergence(nRad, nAng, drhoA, drhoB, r1, r2, theta1, theta2, vxg_s, dvx_s)
+      call getDivergence(nRad, nAng, drhoA, drhoB, r1, r2, theta1, theta2, vcg_s, dvc_s)
+      call getDivergence(nRad, nAng, drhoA, zero, r1, r2, theta1, theta2, vxg_a, dvx_a)
+      call getDivergence(nRad, nAng, drhoA, zero, r1, r2, theta1, theta2, vcg_a, dvc_a)
+      vshift = (vxs + vcs + dvx_s + dvc_s) - (vxa + vca + dvx_a + dvc_a)
+    end if
+  #:endif
+    vshift = vshift + atom2%pot%getValue(r2)
+    allocate(onesv(nGrid)); onesv = 1.0_dp             ! same-centre cos(angle) = 1 for the vtau operator
+
+    onsite(:) = 0.0_dp
+    do i1 = 1, atom1%nBasis
+      l1 = atom1%angmoms(i1)
+      do i2 = 1, atom1%nBasis
+        l2 = atom1%angmoms(i2)
+        if (l2 > l1) cycle                             ! unique pairs (la >= lb)
+        do mm = 0, min(l1, l2)
+          idx = onsiteSkIndex(l1, l2, mm)
+          if (idx == 0) cycle
+          call TRealTessY_init(tes1, l1, mm)
+          call TRealTessY_init(tes2, l2, mm)
+          spher1(:) = tes1%getValue_1d(theta1)         ! both harmonics at theta1 (atom A)
+          spher2(:) = tes2%getValue_1d(theta1)
+          prefac = merge(2.0_dp * pi, pi, mm == 0)     ! azimuthal phi-integral
+          onsite(idx) = prefac * sum(radv(:, i1) * radv(:, i2) * spher1 * spher2 * vshift * weights)
+          if (isMGGA) then                             ! + vtau operator (both orbitals on atom A)
+            dspher1(:) = tes1%getGradTheta_1d(theta1)
+            dspher2(:) = tes2%getGradTheta_1d(theta1)
+            onsite(idx) = onsite(idx) + prefac * getVtau(radv(:, i1), radvp(:, i1), radv(:, i2),&
+                & radvp(:, i2), r1, r1, theta1, theta1, onesv, spher1, spher2, dspher1, dspher2, mm,&
+                & vtaudiff, weights)
+          end if
+        end do
+      end do
+    end do
+
+  end subroutine getOnsiteH0Pair
 
 
   !> Calculates SK-integrals.
@@ -2161,5 +2521,25 @@ contains
     end do
 
   end subroutine TIntegMap_init
+
+
+  !> libxc density floor for fragile mGGAs in the SK two-center integrals. Read once from
+  !! SLATERATOM_DENSTHR (default 1e-9)
+  function getDensThreshold() result(thr)
+
+    !> resulting density threshold
+    real(dp) :: thr
+
+    character(len=64) :: buf
+    integer :: stat, ln
+
+    thr = 1.0e-9_dp
+    call get_environment_variable("SLATERATOM_DENSTHR", buf, ln, stat)
+    if (stat == 0 .and. ln > 0) then
+      read(buf, *, iostat=stat) thr
+      if (stat /= 0 .or. thr <= 0.0_dp) thr = 1.0e-9_dp
+    end if
+
+  end function getDensThreshold
 
 end module twocnt

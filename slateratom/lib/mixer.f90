@@ -4,6 +4,7 @@ module mixer
   use common_accuracy, only : dp
   use broydenmixer, only : TBroydenMixer, TBroydenMixer_mix, TBroydenMixer_reset
   use simplemixer, only : TSimpleMixer, TSimpleMixer_mix, TSimpleMixer_reset
+  use pulaymixer, only : TPulayMixer, TPulayMixer_mix, TPulayMixer_reset
   implicit none
 
   private
@@ -23,6 +24,9 @@ module mixer
     !> Broyden mixer instance
     type(TBroydenMixer), allocatable :: pBroydenMixer
 
+    !> Pulay (DIIS) mixer instance
+    type(TPulayMixer), allocatable :: pPulayMixer
+
   end type TMixer
 
 
@@ -30,6 +34,7 @@ module mixer
   interface TMixer_init
     module procedure TMixer_initSimple
     module procedure TMixer_initBroyden
+    module procedure TMixer_initPulay
   end interface TMixer_init
 
 
@@ -43,6 +48,7 @@ module mixer
   type :: TMixerTypesEnum
     integer :: simple = 1
     integer :: broyden = 2
+    integer :: pulay = 3
   end type TMixerTypesEnum
 
   !> Contains mixer types
@@ -81,6 +87,21 @@ contains
   end subroutine TMixer_initBroyden
 
 
+  !> Initializes a Pulay (DIIS) mixer.
+  subroutine TMixer_initPulay(this, pPulay)
+
+    !> Mixer instance
+    type(TMixer), intent(out) :: this
+
+    !> A valid Pulay mixer instance on exit
+    type(TPulayMixer), allocatable, intent(inout) :: pPulay
+
+    this%mixerType = mixerTypes%pulay
+    call move_alloc(pPulay, this%pPulayMixer)
+
+  end subroutine TMixer_initPulay
+
+
   !> Resets the mixer.
   subroutine TMixer_reset(this, nElem)
 
@@ -95,6 +116,8 @@ contains
       call TSimpleMixer_reset(this%pSimpleMixer, nElem)
     case(mixerTypes%broyden)
       call TBroydenMixer_reset(this%pBroydenMixer, nElem)
+    case(mixerTypes%pulay)
+      call TPulayMixer_reset(this%pPulayMixer, nElem)
     end select
 
   end subroutine TMixer_reset
@@ -117,6 +140,8 @@ contains
       call TSimpleMixer_mix(this%pSimpleMixer, inp, diff)
     case(mixerTypes%broyden)
       call TBroydenMixer_mix(this%pBroydenMixer, inp, diff)
+    case(mixerTypes%pulay)
+      call TPulayMixer_mix(this%pPulayMixer, inp, diff)
     end select
 
   end subroutine TMixer_mix1D

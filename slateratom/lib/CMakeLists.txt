@@ -33,8 +33,10 @@ set(sources-fpp
   confinement.F90
   input.F90
   lapackroutines.F90
+  pulaymixer.F90
   simplemixer.F90
-  xcfunctionals.F90)
+  xcfunctionals.F90
+  xc_doublecounting.F90)
 
 skprogs_preprocess("${FYPP}" "${fypp_flags}" "F90" "f90" "${sources-fpp}" sources-f90-preproc)
 

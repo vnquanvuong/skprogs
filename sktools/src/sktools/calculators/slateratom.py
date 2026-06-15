@@ -409,8 +409,11 @@ class SlateratomInput:
 
         out.append("{:s} \t\t{:s} write eigenvectors".format(
             self._LOGICALSTRS[False], self._COMMENT))
-        out.append("{} {:g} \t\t\t{:s} broyden mixer, mixing factor".format(
-            2, 0.1, self._COMMENT))
+        import os as _os
+        _mixnr = int(_os.environ.get("SLATERATOM_MIXER", "2"))
+        _mixfac = float(_os.environ.get("SLATERATOM_MIX", "0.1"))
+        out.append("{} {:g} \t\t\t{:s} mixer (1 simple/2 broyden/3 pulay), mixing factor".format(
+            _mixnr, _mixfac, self._COMMENT))
 
         # Occupations
         for ll, occperl in enumerate(self._atomconfig.occupations):
@@ -419,13 +422,18 @@ class SlateratomInput:
                 out.append("{:g} {:g} \t\t\t{:s} occupations ({:d}{:s})".format(
                     occ[0], occ[1], self._COMMENT, nn, sc.ANGMOM_TO_SHELL[ll]))
 
-        # Occupied shell range
-        occqns = [[sc.MAX_PRINCIPAL_QN + 1, 0],] * (maxang + 1)
+        occqns = [[sc.MAX_PRINCIPAL_QN + 1, 0] for _ in range(maxang + 1)]
         for qn, occ in self._atomconfig.occshells:
             nn = qn[0]
             ll = qn[1]
             occqns[ll][0] = min(occqns[ll][0], nn)
             occqns[ll][1] = max(occqns[ll][1], nn)
+        for nn, ll in self._atomconfig.valenceshells:
+            occqns[ll][0] = min(occqns[ll][0], nn)
+            occqns[ll][1] = max(occqns[ll][1], nn)
+        for ll in range(maxang + 1):
+            if occqns[ll][1] > 0:
+                occqns[ll][1] += 1
         for ll, vqns in enumerate(occqns):
             out.append("{:d} {:d} \t\t\t{:s} occupied shells from to ({:s})".format(
                 vqns[0], vqns[1], self._COMMENT, sc.ANGMOM_TO_SHELL[ll]))

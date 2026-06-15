@@ -13,7 +13,8 @@ set(sources-f90
   xcfunctionals.f90)
 
 set(sources-fpp
-  twocnt.F90)
+  twocnt.F90
+  xc_doublecounting.F90)
 
 skprogs_preprocess("${FYPP}" "${fypp_flags}" "F90" "f90" "${sources-fpp}" sources-f90-preproc)
 

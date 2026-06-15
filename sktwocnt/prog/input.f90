@@ -447,6 +447,9 @@ contains
     end do
     call TGridorb2_init(atom%pot, data(:, 1), potval)
 
+    call TGridorb2_init(atom%vhartree, data(:, 1), data(:, 3))
+    atom%znuc = data(size(data, dim=1), 1) * data(size(data, dim=1), 3)
+
     call nextline_(fp, iLine, line)
     read(line, *, iostat=iErr) buffer
     call checkerror_(fname, line, iLine, iErr)

@@ -9,7 +9,8 @@ module xcfunctionals
   use utilities, only : zeroOutCpotOfEmptyDensitySpinChannels
 #:if LIBXC_VERSION_MAJOR == 6
   use xc_f03_lib_m, only : xc_f03_func_t, xc_f03_func_init, xc_f03_func_end, xc_f03_lda_exc_vxc,&
-      & xc_f03_gga_exc_vxc, xc_f03_mgga_exc_vxc, xc_f03_func_set_ext_params, XC_LDA_X,&
+      & xc_f03_gga_exc_vxc, xc_f03_mgga_exc_vxc, xc_f03_func_set_ext_params,&
+      & xc_f03_func_set_dens_threshold, XC_LDA_X,&
       & XC_LDA_X_YUKAWA, XC_LDA_C_PW, XC_GGA_X_PBE, XC_GGA_X_B88, XC_GGA_X_SFAT_PBE,&
       & XC_HYB_GGA_XC_B3LYP, XC_HYB_GGA_XC_CAMY_B3LYP, XC_GGA_C_PBE, XC_GGA_C_LYP,&
       & XC_MGGA_X_R2SCAN, XC_MGGA_C_R2SCAN, XC_POLARIZED,&
@@ -28,7 +29,8 @@ module xcfunctionals
       & XC_HYB_GGA_XC_O3LYP, XC_GGA_X_OPTX
 #:elif LIBXC_VERSION_MAJOR == 7
   use xc_f03_lib_m, only : xc_f03_func_t, xc_f03_func_init, xc_f03_func_end, xc_f03_lda_exc_vxc,&
-      & xc_f03_gga_exc_vxc, xc_f03_mgga_exc_vxc, xc_f03_func_set_ext_params, XC_POLARIZED
+      & xc_f03_gga_exc_vxc, xc_f03_mgga_exc_vxc, xc_f03_func_set_ext_params,&
+      & xc_f03_func_set_dens_threshold, XC_POLARIZED
   use xc_f03_funcs_m, only : XC_LDA_X, XC_LDA_X_YUKAWA, XC_LDA_C_PW, XC_GGA_X_PBE, XC_GGA_X_B88,&
       & XC_GGA_X_SFAT_PBE, XC_HYB_GGA_XC_B3LYP, XC_HYB_GGA_XC_CAMY_B3LYP, XC_GGA_C_PBE,&
       & XC_GGA_C_LYP, XC_MGGA_X_R2SCAN, XC_MGGA_C_R2SCAN,&
@@ -794,6 +796,7 @@ contains
     vclapl(:,:) = 0.0_dp
 
     call xc_f03_func_init(xcfunc_x, xId, XC_POLARIZED)
+    call xc_f03_func_set_dens_threshold(xcfunc_x, getDensThreshold())
 
     ! exchange (or, if cId<=0, the combined xc functional)
     call xc_f03_mgga_exc_vxc(xcfunc_x, nn, rhor(1, 1), sigma(1, 1), lapl(1, 1), rtau(1, 1), ex(1),&
@@ -802,6 +805,7 @@ contains
     if (cId > 0) then
       ! separate correlation functional
       call xc_f03_func_init(xcfunc_c, cId, XC_POLARIZED)
+      call xc_f03_func_set_dens_threshold(xcfunc_c, getDensThreshold())
       call xc_f03_mgga_exc_vxc(xcfunc_c, nn, rhor(1, 1), sigma(1, 1), lapl(1, 1), rtau(1, 1), ec(1),&
           & vc(1, 1), vcsigma(1, 1), vclapl(1, 1), vctau(1, 1))
       call zeroOutCpotOfEmptyDensitySpinChannels(rho, vc)
@@ -820,6 +824,25 @@ contains
     call xc_f03_func_end(xcfunc_x)
 
   end subroutine getExcVxc_MGGA
+
+
+  !> libxc density floor: points with rho below it return zero xc, guarding the numerically fragile.
+  function getDensThreshold() result(thr)
+
+    !> resulting density threshold
+    real(dp) :: thr
+
+    character(len=64) :: buf
+    integer :: stat, ln
+
+    thr = 1.0e-9_dp
+    call get_environment_variable("SLATERATOM_DENSTHR", buf, ln, stat)
+    if (stat == 0 .and. ln > 0) then
+      read(buf, *, iostat=stat) thr
+      if (stat /= 0 .or. thr <= 0.0_dp) thr = 1.0e-9_dp
+    end if
+
+  end function getDensThreshold
 
 
   !> Dispatches a meta-GGA xc-functional id (xcnr) to libxc functional ids and calls getExcVxc_MGGA.

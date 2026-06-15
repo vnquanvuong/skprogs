@@ -279,7 +279,7 @@ class _XCRangeSepErf(sc.ClassDict):
     '''erf range-separated hybrid (wB97X/wB97M) realised through a sum of Yukawa kernels (only the
     Yukawa kernel e^{-a r}/r has closed-form Slater-type-orbital two-electron integrals). The exact
     exchange is alpha*K_full + beta*K_erfLR with K_erfLR = sum_i c_i K_LRYukawa(beta_i*omega), the
-    omega-independent {c_i, beta_i} hardcoded in the Fortran codes. M (myukawa, default 14) is the
+    omega-independent {c_i, beta_i} hardcoded in the Fortran codes. M (myukawa, default 20) is the
     number of Yukawa terms approximating erf/erfc; VV10 nonlocal correlation is dropped (it is not
     representable in the SK-file framework -> pair with D3 for the -D3 form).
 
@@ -298,7 +298,7 @@ class _XCRangeSepErf(sc.ClassDict):
     @classmethod
     def fromhsd(cls, root, query):
         '''Creates instance from a HSD-node and with given query object.'''
-        myukawa, child = query.getvalue(root, 'myukawa', conv.int0, defvalue=14,
+        myukawa, child = query.getvalue(root, 'myukawa', conv.int0, defvalue=20,
                                         returnchild=True)
         if not 1 <= myukawa <= 30:
             raise hsd.HSDInvalidTagValueException(

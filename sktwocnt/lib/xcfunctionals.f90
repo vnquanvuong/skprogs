@@ -110,6 +110,7 @@ module xcfunctionals
     procedure :: isLDA => TXcFunctionalsEnum_isLDA
     procedure :: isGGA => TXcFunctionalsEnum_isGGA
     procedure :: isMGGA => TXcFunctionalsEnum_isMGGA
+    procedure :: isCombinedXc => TXcFunctionalsEnum_isCombinedXc
     procedure :: isGlobalHybrid => TXcFunctionalsEnum_isGlobalHybrid
     procedure :: isLongRangeCorrected => TXcFunctionalsEnum_isLongRangeCorrected
     procedure :: isCAMY => TXcFunctionalsEnum_isCAMY
@@ -185,6 +186,37 @@ contains
         & .or. xcnr == this%HMGGA_CF22D) isMGGA = .true.
 
   end function TXcFunctionalsEnum_isMGGA
+
+
+  pure function TXcFunctionalsEnum_isCombinedXc(this, xcnr) result(isCombinedXc)
+
+    !> Class instance
+    class(TXcFunctionalsEnum), intent(in) :: this
+
+    !> identifier of exchange-correlation type
+    integer, intent(in) :: xcnr
+
+    logical :: isCombinedXc
+
+    isCombinedXc = .false.
+
+    if (xcnr == this%HYB_B3LYP .or. xcnr == this%CAMY_B3LYP .or. xcnr == this%GGA_B97D&
+        & .or. xcnr == this%HYB_B97_2 .or. xcnr == this%HYB_B97_3 .or. xcnr == this%MGGA_B97M&
+        & .or. xcnr == this%HMGGA_r2SCANh .or. xcnr == this%HMGGA_r2SCAN0&
+        & .or. xcnr == this%HMGGA_PW6B95 .or. xcnr == this%WB97X_V&
+        & .or. xcnr == this%WB97M_V .or. xcnr == this%MGGA_TASK&
+        & .or. xcnr == this%HMGGA_TPSSh .or. xcnr == this%HMGGA_r2SCAN50&
+        & .or. xcnr == this%HSE06 .or. xcnr == this%LC_WPBE&
+        & .or. xcnr == this%CAM_B3LYP .or. xcnr == this%CAM_PBEH&
+        & .or. xcnr == this%WHPBE0 .or. xcnr == this%HSE12&
+        & .or. xcnr == this%GGA_B97_3c&
+        & .or. xcnr == this%HYB_B97 .or. xcnr == this%HYB_B97_1&
+        & .or. xcnr == this%HYB_B97_K&
+        & .or. xcnr == this%WB97 .or. xcnr == this%WB97X&
+        & .or. xcnr == this%WB97X_D .or. xcnr == this%WB97X_D3&
+        & .or. xcnr == this%HYB_O3LYP) isCombinedXc = .true.
+
+  end function TXcFunctionalsEnum_isCombinedXc
 
 
   pure function TXcFunctionalsEnum_isLongRangeCorrected(this, xcnr) result(isLongRangeCorrected)
